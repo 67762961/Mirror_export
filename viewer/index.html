@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GitHub 只读镜像</title>
+  <link rel="stylesheet" href="css/app.css" />
+</head>
+<body>
+  <div id="app">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">GH</div>
+        <div class="brand-text">
+          <div class="brand-title" id="brand-title">只读镜像</div>
+          <div class="brand-sub" id="brand-sub">加载中…</div>
+        </div>
+      </div>
+
+      <nav class="nav" id="nav">
+        <button class="nav-item active" data-view="overview">概览</button>
+        <button class="nav-item" data-view="prs">Pull Requests <span class="badge" id="cnt-prs"></span></button>
+        <button class="nav-item" data-view="issues">Issues <span class="badge" id="cnt-issues"></span></button>
+        <button class="nav-item" data-view="commits">Commits <span class="badge" id="cnt-commits"></span></button>
+        <button class="nav-item" data-view="tags">Releases</button>
+        <button class="nav-item" data-view="compare">版本对比</button>
+        <button class="nav-item" data-view="files">文件浏览</button>
+        <button class="nav-item" data-view="readme">README</button>
+      </nav>
+
+      <div class="sidebar-foot" id="sidebar-foot"></div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="search-wrap">
+          <input id="global-search" type="search" placeholder="在当前列表中搜索…" autocomplete="off" />
+        </div>
+        <div class="topbar-meta" id="topbar-meta"></div>
+      </header>
+
+      <div id="content" class="content">
+        <div class="empty">正在加载镜像数据…</div>
+      </div>
+    </main>
+  </div>
+
+  <div id="hover-card" class="hover-card" hidden></div>
+
+  <script src="data/meta.js"></script>
+  <script src="data/prs.js"></script>
+  <script src="data/issues.js"></script>
+  <script src="data/commits.js"></script>
+  <script src="data/tags.js"></script>
+  <script src="data/releases.js"></script>
+  <script src="data/files.js"></script>
+  <script src="data/branches.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

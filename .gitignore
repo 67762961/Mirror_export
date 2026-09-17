@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.venv-*/
+.build-venv/
+venv/
+env/
+
+# 构建产物
+build/
+build_pyinstaller/
+dist/
+*.spec.bak
+
+# 导出缓存与运行时数据（含 Token 缓存，禁止入库）
+data/
+preview/
+sample/
+gh_token_cache.json
+*.token
+.env
+.env.*
+
+# 导出默认输出目录（gh-mirror / gh-mirror-<owner>-<name>-<date>）
+gh-mirror
+gh-mirror-*/
+
+# 误入的其他项目 README 配图
+assets/Readme/
+
+# 系统 / 编辑器
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+*~
