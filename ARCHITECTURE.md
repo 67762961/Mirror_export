@@ -98,10 +98,12 @@ export.export(args)
       · 缓存命中则复用
       · 需要时 GET /commits/{sha} 补 diff
       · 历史缓存中不在本轮窗口的 commit 一律保留
-6) pulls?state=all
+6) pulls?state=all&sort=created&direction=desc
+      · 列表按编号从新到旧（创建顺序，大号在前）
       · updated_at 未变且已有 files → 整条复用
       · 否则拉 files / commits / comments
-7) issues（过滤 pull_request）
+7) issues（过滤 pull_request，sort=created&direction=desc）
+      · 列表按编号从新到旧
       · updated_at 未变且已有 comments → 复用
       · closed issue 尽量补 closed_by_pr（PR body 或 timeline）
 8) git/trees?recursive=1

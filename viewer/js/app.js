@@ -677,6 +677,11 @@
     return String(text || "").toLowerCase().includes(state.search.toLowerCase());
   }
 
+  /* 按编号（创建顺序）从新到旧：大号在前 */
+  function byNumberDesc(a, b) {
+    return (b.number || 0) - (a.number || 0);
+  }
+
   function loadAllData() {
     D.prs = D.prs || [];
     D.issues = D.issues || [];
@@ -897,7 +902,7 @@
       <div class="panel">
         <div class="panel-hd">打开中的 PR</div>
         <div class="panel-bd" style="padding:0">
-          ${D.prs.filter((p) => p.state === "open").slice(0, 8).map(prRow).join("") || `<div class="empty">无打开中的 PR</div>`}
+          ${D.prs.filter((p) => p.state === "open").sort(byNumberDesc).slice(0, 8).map(prRow).join("") || `<div class="empty">无打开中的 PR</div>`}
         </div>
       </div>
     `;
@@ -910,7 +915,7 @@
       return pr ? renderPrDetail(pr) : `<div class="empty">未找到 PR #${state.prDetail}</div>`;
     }
 
-    let list = D.prs.slice();
+    let list = D.prs.slice().sort(byNumberDesc);
     if (state.prFilter === "open") list = list.filter((p) => p.state === "open" && !p.merged);
     else if (state.prFilter === "merged") list = list.filter((p) => p.merged);
     else if (state.prFilter === "closed") list = list.filter((p) => p.state === "closed" && !p.merged);
@@ -1027,7 +1032,7 @@
       return issue ? renderIssueDetail(issue) : `<div class="empty">未找到 Issue #${state.issueDetail}</div>`;
     }
 
-    let list = D.issues.slice();
+    let list = D.issues.slice().sort(byNumberDesc);
     if (state.issueFilter === "open") list = list.filter((i) => i.state === "open");
     else if (state.issueFilter === "closed") list = list.filter((i) => i.state === "closed");
     list = list.filter((i) => matchSearch(`${i.number} ${i.title} ${i.body || ""} ${(i.user && i.user.login) || ""}`));
@@ -1198,7 +1203,7 @@
     const cmp = r.compare || {};
     const files = cmp.files || [];
     const commits = cmp.commits || [];
-    const prs = r.related_prs || [];
+    const prs = (r.related_prs || []).slice().sort(byNumberDesc);
     return `
       <button class="back-link" data-back="tags">← 返回 Releases</button>
       <div class="detail-hd">

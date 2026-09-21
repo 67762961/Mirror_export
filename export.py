@@ -704,7 +704,8 @@ def export(args) -> Path:
 
     # --- pull requests（增量：updated_at 未变则复用详情） ---
     log("拉取 pull requests ...")
-    raw_prs = paginate(f"{API}/repos/{repo}/pulls?state=all&sort=updated&direction=desc", token, args.max_prs, "prs")
+    # 按编号（创建顺序）从新到旧拉取，保证数量上限时优先保留高编号
+    raw_prs = paginate(f"{API}/repos/{repo}/pulls?state=all&sort=created&direction=desc", token, args.max_prs, "prs")
     prev_prs = {p.get("number"): p for p in (prev.get("prs") or []) if p.get("number")}
     prs = []
     n_pr_reuse = 0
@@ -755,12 +756,13 @@ def export(args) -> Path:
         entry["merged"] = bool(pr.get("merged_at"))
         entry["commits_list"] = pr_commits
         prs.append(entry)
+    prs.sort(key=lambda p: (p.get("number") or 0), reverse=True)
     log(f"  PRs: {len(prs)}（详情新拉 {n_pr_fetch}, 缓存复用 {n_pr_reuse}）")
 
     # 回填 release 关联 PR（body 里的 #num）
     pr_index = {p.get("number"): p for p in prs}
     for rel in releases:
-        nums = rel.get("related_pr_nums") or []
+        nums = sorted(rel.get("related_pr_nums") or [], reverse=True)
         rel["related_prs"] = [
             {
                 "number": n,
@@ -774,7 +776,8 @@ def export(args) -> Path:
 
     # --- issues（增量） ---
     log("拉取 issues ...")
-    raw_issues_all = paginate(f"{API}/repos/{repo}/issues?state=all&sort=updated&direction=desc", token, args.max_issues * 2, "issues")
+    # 按编号（创建顺序）从新到旧拉取；仍过滤 pull_request
+    raw_issues_all = paginate(f"{API}/repos/{repo}/issues?state=all&sort=created&direction=desc", token, args.max_issues * 2, "issues")
     prev_issues = {i.get("number"): i for i in (prev.get("issues") or []) if i.get("number")}
     issues = []
     n_i_reuse = 0
@@ -817,6 +820,7 @@ def export(args) -> Path:
             issues[-1]["closed_by_pr"] = old["closed_by_pr"]
         if len(issues) >= args.max_issues:
             break
+    issues.sort(key=lambda x: (x.get("number") or 0), reverse=True)
     log(f"  issues: {len(issues)}（详情新拉 {n_i_fetch}, 缓存复用 {n_i_reuse}）")
 
     # --- 标记「由哪个 PR 关闭」：解析 PR body 的 Closes/Fixes #n，以及 timeline ---
