@@ -11,6 +11,7 @@
 - 为 PR、Issue、Commit 拉取详情（diff、评论、文件列表）；
 - Release 与上一 Tag 的 compare，并从 release body 关联 `#123` PR；
 - 下载 README 等图片资源到本地 `assets/`；
+- 下载 PR / Issue / Release 正文与评论中的外链图片到 `assets/externals/`，并写入 `meta.image_map`；
 - 增量导出：复用上次缓存，只拉有变化的内容；
 - 纯静态查看器：概览 / PR / Issue / Commit / Release / 版本对比 / 文件浏览 / README。
 
@@ -77,7 +78,8 @@ gh-mirror-<owner>-<name>-<date>/
 │   ├── branches.js
 │   └── manifest.json
 └── assets/
-    ├── .index.json                path -> blob sha（增量判断）
+    ├── .index.json                path/blob sha + ext:<url> → 本地相对路径（增量判断）
+    ├── externals/                 PR/Issue/Release 正文外链图片
     └── <repo images...>
 ```
 
@@ -110,7 +112,13 @@ export.export(args)
       · 文本且 size ≤ max_file_bytes 时缓存 contents
       · blob sha 未变则复用正文
 9) download_repo_images → assets/（sha 未变则跳过）
-10) branches
+10) collect_body_image_urls + resolve_attachment_aliases + download_body_images
+      · 扫描 PR/Issue 正文与评论、Release body 中的 Markdown/HTML 图片 URL
+      · 私有库 `github.com/user-attachments/assets/*` 直链常 404：经 GraphQL `bodyHTML`
+        解析成 `private-user-images.githubusercontent.com/...?jwt=...` 再下载（JWT 约 5 分钟有效，导出时即时拉取）
+      · 外链下载到 assets/externals/；树内 raw URL 直接映射已有 assets
+      · 写出 meta.image_map：原始 URL → assets 相对路径（键仍是 markdown 里的原始 URL）
+11) branches
         ↓
 copy_viewer + 写出 data/*.js + manifest.json
 ```
@@ -183,7 +191,7 @@ window.GH_DATA=window.GH_DATA||{};window.GH_DATA.<name>=<compact-json>;
 
 | 文件 | 顶层类型 | 核心字段 |
 |------|----------|----------|
-| `meta.js` | object | `repo`、`default_branch`、`exported_at`、`incremental`、`limits`、`file_stats` |
+| `meta.js` | object | `repo`、`default_branch`、`exported_at`、`incremental`、`limits`、`file_stats`、`image_map` |
 | `prs.js` | array | `number`、`title`、`state`、`merged`、`files[]`、`issue_comments[]`、`commits_list[]` |
 | `issues.js` | array | `number`、`title`、`state`、`issue_comments[]`、`closed_by_pr` |
 | `commits.js` | array | `sha`、`message`、`files[]`、`stats`、`has_diff`、`parents[]` |
@@ -193,6 +201,17 @@ window.GH_DATA=window.GH_DATA||{};window.GH_DATA.<name>=<compact-json>;
 | `branches.js` | array | `name`、`sha`、`protected` |
 
 `files.contents` 中的路径与 `tree` 一致；图片正文不进 contents，而落到 `assets/<path>`，由查看器按相对路径引用。
+
+`meta.image_map` 为 `{ 原始URL: "相对 assets 的路径" }`，例如：
+
+```json
+{
+  "https://github.com/user-attachments/assets/xxxx": "externals/ab12cd34ef56.png",
+  "https://raw.githubusercontent.com/owner/name/main/docs/a.png": "docs/a.png"
+}
+```
+
+查看器 `mdSrc()` / HTML `<img>` 在渲染时优先查该表，命中则输出 `assets/<mapped>`；未命中的 `http(s)` 外链仍原样保留（外网可显示，内网走 `onerror` 标记为损坏）。
 
 ## 6. 增量导出机制
 
@@ -206,7 +225,8 @@ window.GH_DATA=window.GH_DATA||{};window.GH_DATA.<name>=<compact-json>;
 | Issue 详情 | `updated_at` 相同且已有 `issue_comments` | 整条复用 |
 | Issue closed_by | 缓存中已有 `closed_by_pr` 字段（含 null） | 不再查 timeline |
 | 文件正文 | path 的 blob sha 未变 | 复用 `contents` |
-| 图片 | `assets/.index.json` 中 sha 一致且文件存在 | 跳过下载 |
+| 图片（树内） | `assets/.index.json` 中 path/sha 一致且文件存在 | 跳过下载 |
+| 正文外链图片 | `.index.json` 中 `ext:<url>` 对应文件存在 | 跳过下载，仍写入 `image_map` |
 | Release compare | `published_at` 未变且已有 `compare` | 整块复用 |
 
 设计意图：多轮导出越跑越快，且旧 commit/diff 不被本轮窗口裁掉。改缓存键或结构时，必须保证旧包仍能被 `parse_data_js` 读回。
@@ -220,7 +240,10 @@ window.GH_DATA=window.GH_DATA||{};window.GH_DATA.<name>=<compact-json>;
    - 单文件 >400KB 不缓存正文；
    - 二进制扩展名（`BINARY_EXT`）不缓存正文；
    - 单文件 patch 超过 80000 字符会截断；
-   - 图片单文件 >2MB 不下载。
+   - 图片单文件 >2MB 不下载（树内图与正文外链图共用上限 `BODY_IMAGE_MAX_BYTES`）；
+   - Token 只发给 GitHub 系域名（`github.com` / `*.githubusercontent.com` / `githubassets.com`），不发给第三方 CDN；
+   - 含 `jwt=` 的签名 CDN URL 不附带 Token（避免干扰）；
+   - 正文附件需 Token 具备读取 Issues/PR 的权限（fine-grained：Issues + Pull requests → Read）。
 4. **速率**：`X-RateLimit-Remaining < 5` 或 HTTP 403/429 时自动等待；5xx 指数退避重试。
 
 ## 8. 打包与运行

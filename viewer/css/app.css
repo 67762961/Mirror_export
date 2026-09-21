@@ -662,16 +662,28 @@ tr.hunk td {
 }
 .markdown-body a { color: var(--accent); text-decoration: none; }
 .markdown-body a:hover { text-decoration: underline; }
-.markdown-body img.md-img {
+
+/* 图片：正文与表格内均缩放显示，不按原始像素撑开 */
+.markdown-body img.md-img,
+.markdown-body p img,
+.markdown-body li img,
+.markdown-body td img,
+.markdown-body th img {
   max-width: 100%;
+  max-height: 280px;
+  width: auto;
+  height: auto;
   box-sizing: content-box;
   background: transparent;
   border-radius: 3px;
+  vertical-align: middle;
+  cursor: context-menu;
 }
 .markdown-body img.md-img-broken {
   border: 1px dashed var(--border);
   padding: 8px;
   color: var(--text-muted);
+  max-height: 80px;
 }
 .md-table-wrap {
   overflow-x: auto;
@@ -695,6 +707,51 @@ tr.hunk td {
 .md-table tr:nth-child(2n) td {
   background: rgba(246, 248, 250, 0.7);
 }
+
+/* 对比表：|图1|图2| 左右并列，等高缩放（贴近 GitHub 对比截图） */
+.md-table.md-img-compare {
+  table-layout: fixed;
+  width: 100%;
+}
+.md-table.md-img-compare th,
+.md-table.md-img-compare td {
+  text-align: center;
+  vertical-align: middle;
+  width: 50%;
+  padding: 10px 12px;
+}
+.md-table.md-img-compare th {
+  font-size: 14px;
+  font-weight: 600;
+}
+.md-table.md-img-compare .md-img-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 360px;
+  min-height: 240px;
+  margin: 0 auto;
+}
+.md-table.md-img-compare .md-img-cell img,
+.md-table.md-img-compare td img.md-img,
+.md-table.md-img-compare td img {
+  max-height: 100%;
+  max-width: 100%;
+  height: auto;
+  width: auto;
+  object-fit: contain;
+  margin: 0 auto;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+}
+.md-table.md-img-compare td.md-img-cell-empty,
+.md-table.md-img-compare td:not(:has(img)):not(:has(.md-img-cell)) {
+  height: 360px;
+  color: var(--text-muted);
+}
+
 .readme-view {
   background: #fff;
   padding: 32px 32px 48px;
