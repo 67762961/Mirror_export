@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import re
@@ -383,6 +384,499 @@ def download_repo_images(
     return n_new, n_skip
 
 
+# 正文外链图片（PR/Issue/Release）下载上限，与仓库树图片一致
+BODY_IMAGE_MAX_BYTES = 2_000_000
+
+# Content-Type → 扩展名（user-attachments 等 URL 往往无后缀）
+CTYPE_EXT = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/svg+xml": ".svg",
+    "image/bmp": ".bmp",
+    "image/x-icon": ".ico",
+    "image/vnd.microsoft.icon": ".ico",
+}
+
+# 仅对这些域名附带 Token（禁止把 GitHub Token 发给第三方 CDN）
+GITHUB_ASSET_HOSTS = (
+    "github.com",
+    "api.github.com",
+    "raw.githubusercontent.com",
+    "user-images.githubusercontent.com",
+    "objects.githubusercontent.com",
+    "githubusercontent.com",
+    "githubassets.com",
+)
+
+MD_IMAGE_RE = re.compile(
+    r"!\[[^\]]*\]\(\s*(?:<([^>]+)>|([^)\s]+))\s*\)",
+    re.I,
+)
+HTML_IMG_SRC_RE = re.compile(
+    r"<img\b[^>]*\bsrc\s*=\s*[\"']([^\"']+)[\"']",
+    re.I,
+)
+
+# GitHub 粘贴附件：markdown 里是 github.com/user-attachments/assets/<uuid>
+# 私有库对该直链即使带 PAT 也常返回 404，需经 GraphQL bodyHTML 解析成
+# private-user-images.githubusercontent.com/...?jwt=... 再下载
+USER_ATTACHMENTS_RE = re.compile(
+    r"^https?://github\.com/user-attachments/assets/",
+    re.I,
+)
+HTML_SRC_ANY_RE = re.compile(r"src=[\"'](https?://[^\"']+)[\"']", re.I)
+
+
+def _is_github_asset_host(url: str) -> bool:
+    host = (urllib.parse.urlparse(url).hostname or "").lower()
+    return any(host == h or host.endswith("." + h) for h in GITHUB_ASSET_HOSTS)
+
+
+def is_user_attachments_url(url: str) -> bool:
+    return bool(url) and bool(USER_ATTACHMENTS_RE.match(url.strip()))
+
+
+def _url_match_keys(url: str) -> list[str]:
+    """用于把 markdown 原始 URL 与 bodyHTML 解析后的 CDN URL 对齐。"""
+    bare = (url or "").split("?")[0].split("#")[0].rstrip("/")
+    last = bare.rsplit("/", 1)[-1].lower()
+    if not last:
+        return []
+    keys = [last]
+    stem = last.split(".")[0]
+    if len(stem) >= 8:
+        keys.append(stem)
+    return keys
+
+
+def _html_unescape(s: str) -> str:
+    return (
+        (s or "")
+        .replace("&amp;", "&")
+        .replace("&quot;", '"')
+        .replace("&#39;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+    )
+
+
+def graphql_post(token: str, query: str, variables: dict | None = None) -> dict:
+    """调用 GitHub GraphQL；失败抛异常。"""
+    payload: dict = {"query": query}
+    if variables:
+        payload["variables"] = variables
+    data = json.dumps(payload).encode("utf-8")
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "Mirror_export/1.0",
+        "Content-Type": "application/json",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(f"{API}/graphql", data=data, headers=headers, method="POST")
+    last_err = None
+    for attempt in range(MAX_RETRIES):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                body = resp.read()
+                obj = json.loads(body.decode("utf-8"))
+                if obj.get("errors"):
+                    msgs = "; ".join(str(e.get("message") or e) for e in obj["errors"][:3])
+                    raise RuntimeError(f"GraphQL errors: {msgs}")
+                return obj
+        except urllib.error.HTTPError as e:
+            if e.code in (403, 429):
+                reset = e.headers.get("X-RateLimit-Reset")
+                if reset:
+                    wait = max(0, int(reset) - int(time.time())) + 1
+                    if wait > 0:
+                        log(f"  [rate-limit] GraphQL HTTP {e.code}，等待 {wait}s ...")
+                        time.sleep(min(wait, 90))
+                        continue
+            if e.code >= 500:
+                time.sleep(BACKOFF ** attempt)
+                last_err = e
+                continue
+            detail = e.read().decode("utf-8", errors="replace")[:300]
+            raise RuntimeError(f"GraphQL HTTP {e.code}: {detail}") from e
+        except urllib.error.URLError as e:
+            time.sleep(BACKOFF ** attempt)
+            last_err = e
+    raise RuntimeError(f"GraphQL 请求失败: {last_err}")
+
+
+def map_html_to_aliases(htmls: list, pending: set, aliases: dict) -> None:
+    """用 bodyHTML 中的 <img src> 解析 pending 里的原始 URL → 可下载 CDN URL。"""
+    if not pending:
+        return
+    srcs = []
+    for html in htmls:
+        if not html:
+            continue
+        for m in HTML_SRC_ANY_RE.finditer(html):
+            src = _html_unescape(m.group(1))
+            if src:
+                srcs.append(src)
+    if not srcs:
+        return
+    for orig in list(pending):
+        keys = _url_match_keys(orig)
+        for src in srcs:
+            low = src.lower()
+            if any(k in low for k in keys):
+                aliases[orig] = src
+                pending.discard(orig)
+                break
+
+
+def _batched(seq: list, n: int):
+    for i in range(0, len(seq), n):
+        yield seq[i:i + n]
+
+
+def resolve_attachment_aliases(repo: str, prs: list, issues: list, releases: list, token: str) -> dict:
+    """GraphQL bodyHTML：把 user-attachments 等 404 直链解析成可下载 URL。
+
+    返回 {markdown原始URL: 实际下载URL}。image_map 的键仍使用原始 URL。
+    """
+    aliases: dict[str, str] = {}
+    if not token:
+        return aliases
+    owner, _, name = repo.partition("/")
+    if not owner or not name:
+        return aliases
+
+    pending: set[str] = set()
+
+    def texts_attachment_urls(texts: list) -> set:
+        own = set()
+        for t in texts:
+            for u in extract_md_image_urls(t or ""):
+                if is_user_attachments_url(u):
+                    own.add(u)
+        return own
+
+    pr_need = []
+    for p in prs or []:
+        texts = [p.get("body") or ""] + [c.get("body") or "" for c in (p.get("issue_comments") or [])]
+        own = texts_attachment_urls(texts)
+        if own:
+            pr_need.append(p.get("number"))
+            pending |= own
+
+    iss_need = []
+    for i in issues or []:
+        texts = [i.get("body") or ""] + [c.get("body") or "" for c in (i.get("issue_comments") or [])]
+        own = texts_attachment_urls(texts)
+        if own:
+            iss_need.append(i.get("number"))
+            pending |= own
+
+    rel_need = []
+    for r in releases or []:
+        own = texts_attachment_urls([r.get("body") or ""])
+        if own:
+            tag = r.get("tag_name") or r.get("name") or ""
+            if tag:
+                rel_need.append(tag)
+                pending |= own
+
+    if not pending:
+        return aliases
+    log(f"  GraphQL 解析附件直链: pending={len(pending)}, prs={len(pr_need)}, issues={len(iss_need)}, releases={len(rel_need)}")
+
+    # PR：bodyHTML + issue comments bodyHTML
+    for batch in _batched([n for n in pr_need if n is not None], 8):
+        parts = [
+            f"p{n}: pullRequest(number: {int(n)}) "
+            f"{{ bodyHTML comments(first: 100) {{ nodes {{ bodyHTML }} }} }}"
+            for n in batch
+        ]
+        q = f'query {{ repository(owner: {json.dumps(owner)}, name: {json.dumps(name)}) {{ {" ".join(parts)} }} }}'
+        try:
+            obj = graphql_post(token, q)
+        except Exception as e:
+            log(f"  [warn] GraphQL PR 附件解析失败: {e}")
+            continue
+        repo_data = ((obj.get("data") or {}).get("repository") or {})
+        for n in batch:
+            node = repo_data.get(f"p{n}") or {}
+            htmls = [node.get("bodyHTML") or ""]
+            for c in ((node.get("comments") or {}).get("nodes") or []):
+                htmls.append(c.get("bodyHTML") or "")
+            map_html_to_aliases(htmls, pending, aliases)
+
+    for batch in _batched([n for n in iss_need if n is not None], 8):
+        parts = [
+            f"i{n}: issue(number: {int(n)}) "
+            f"{{ bodyHTML comments(first: 100) {{ nodes {{ bodyHTML }} }} }}"
+            for n in batch
+        ]
+        q = f'query {{ repository(owner: {json.dumps(owner)}, name: {json.dumps(name)}) {{ {" ".join(parts)} }} }}'
+        try:
+            obj = graphql_post(token, q)
+        except Exception as e:
+            log(f"  [warn] GraphQL Issue 附件解析失败: {e}")
+            continue
+        repo_data = ((obj.get("data") or {}).get("repository") or {})
+        for n in batch:
+            node = repo_data.get(f"i{n}") or {}
+            htmls = [node.get("bodyHTML") or ""]
+            for c in ((node.get("comments") or {}).get("nodes") or []):
+                htmls.append(c.get("bodyHTML") or "")
+            map_html_to_aliases(htmls, pending, aliases)
+
+    if rel_need:
+        q = (
+            f'query {{ repository(owner: {json.dumps(owner)}, name: {json.dumps(name)}) '
+            f'{{ releases(first: 50, orderBy: {{field: CREATED_AT, direction: DESC}}) '
+            f'{{ nodes {{ tagName descriptionHTML }} }} }} }}'
+        )
+        try:
+            obj = graphql_post(token, q)
+            nodes = (((obj.get("data") or {}).get("repository") or {}).get("releases") or {}).get("nodes") or []
+            by_tag = {n.get("tagName"): n.get("descriptionHTML") or "" for n in nodes}
+            for tag in rel_need:
+                map_html_to_aliases([by_tag.get(tag) or ""], pending, aliases)
+        except Exception as e:
+            log(f"  [warn] GraphQL Release 附件解析失败: {e}")
+
+    log(f"  GraphQL 附件别名: 已解析 {len(aliases)}，仍未解析 {len(pending)}")
+    return aliases
+
+
+def extract_md_image_urls(text: str) -> list[str]:
+    """从 markdown / HTML 正文抽取图片 URL（保持顺序、去重）。
+
+    先去掉 fenced code 与 inline code，避免下载示例代码里的假 URL。
+    """
+    if not text:
+        return []
+    cleaned = re.sub(r"```[\s\S]*?```", "\n", text)
+    cleaned = re.sub(r"~~~[\s\S]*?~~~", "\n", cleaned)
+    cleaned = re.sub(r"`[^`\n]+`", "\n", cleaned)
+    found = []
+    for m in MD_IMAGE_RE.finditer(cleaned):
+        u = (m.group(1) or m.group(2) or "").strip()
+        if u:
+            found.append(u)
+    for m in HTML_IMG_SRC_RE.finditer(cleaned):
+        u = (m.group(1) or "").strip()
+        if u:
+            found.append(u)
+    seen = set()
+    out = []
+    for u in found:
+        if u not in seen:
+            seen.add(u)
+            out.append(u)
+    return out
+
+
+def collect_body_image_urls(prs: list, issues: list, releases: list) -> list[str]:
+    """汇总 PR/Issue 评论与 Release 正文中的图片 URL。"""
+    texts = []
+    for p in prs or []:
+        texts.append(p.get("body") or "")
+        for c in p.get("issue_comments") or []:
+            texts.append(c.get("body") or "")
+    for i in issues or []:
+        texts.append(i.get("body") or "")
+        for c in i.get("issue_comments") or []:
+            texts.append(c.get("body") or "")
+    for r in releases or []:
+        texts.append(r.get("body") or "")
+    urls: list[str] = []
+    seen = set()
+    for t in texts:
+        for u in extract_md_image_urls(t):
+            if u not in seen:
+                seen.add(u)
+                urls.append(u)
+    return urls
+
+
+def resolve_repo_image_url(url: str, repo: str, tree_image_paths: list[str]) -> str | None:
+    """绝对 raw/blob URL 若指向仓库树内图片，返回 assets 相对路径，避免重复下载。"""
+    if not url or url.startswith("data:"):
+        return None
+    if not _is_github_asset_host(url):
+        return None
+    bare = url.split("?")[0].split("#")[0]
+    bare = urllib.parse.unquote(bare)
+    repo_l = repo.lower()
+    if repo_l not in bare.lower():
+        return None
+    for path in sorted(tree_image_paths, key=len, reverse=True):
+        if bare.endswith("/" + path) or bare.endswith("/" + path.replace(" ", "%20")):
+            return asset_rel(path)
+    return None
+
+
+def sniff_image_ext(data: bytes) -> str:
+    """按文件头猜测图片扩展名。"""
+    if not data:
+        return ""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if data.startswith(b"GIF87a") or data.startswith(b"GIF89a"):
+        return ".gif"
+    if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return ".webp"
+    if data.startswith(b"BM"):
+        return ".bmp"
+    head = data[:200].lstrip().lower()
+    if head.startswith(b"<?xml") or head.startswith(b"<svg"):
+        return ".svg"
+    return ""
+
+
+def guess_ext_from_url_ct(url: str, ctype: str) -> str:
+    path = urllib.parse.urlparse(url).path
+    ext = Path(path).suffix.lower()
+    if ext in IMAGE_EXT:
+        return ext
+    ctype = (ctype or "").split(";")[0].strip().lower()
+    return CTYPE_EXT.get(ctype, "")
+
+
+def body_image_rel(url: str, ext: str) -> str:
+    h = hashlib.sha1(url.encode("utf-8")).hexdigest()[:16]
+    if not ext.startswith("."):
+        ext = ("." + ext) if ext else ".img"
+    return f"externals/{h}{ext}"
+
+
+def fetch_image_bytes(url: str, token: str, max_bytes: int, timeout: int = 30) -> tuple[bytes, str]:
+    """下载图片字节；仅 GitHub 系域名带 Token（URL 已含 jwt 时不附带）。
+
+    返回 (data, content-type)。失败时短暂退避重试。
+    """
+    headers = {
+        "User-Agent": "Mirror_export/1.0",
+        "Accept": "image/*,*/*;q=0.8",
+    }
+    if token and _is_github_asset_host(url) and "jwt=" not in url.lower():
+        headers["Authorization"] = f"Bearer {token}"
+    last_err = None
+    for attempt in range(3):
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                ctype = resp.headers.get("Content-Type", "") or ""
+                cl = resp.headers.get("Content-Length")
+                if cl:
+                    try:
+                        if int(cl) > max_bytes:
+                            raise RuntimeError(f"超过大小上限 {max_bytes}")
+                    except ValueError:
+                        pass
+                chunks = []
+                got = 0
+                while True:
+                    chunk = resp.read(64 * 1024)
+                    if not chunk:
+                        break
+                    got += len(chunk)
+                    if got > max_bytes:
+                        raise RuntimeError(f"超过大小上限 {max_bytes}")
+                    chunks.append(chunk)
+                return b"".join(chunks), ctype
+        except urllib.error.HTTPError as e:
+            if e.code >= 500 and attempt < 2:
+                time.sleep(BACKOFF ** attempt)
+                last_err = e
+                continue
+            raise
+        except Exception as e:
+            if attempt < 2:
+                time.sleep(1.0 * (attempt + 1))
+                last_err = e
+                continue
+            raise RuntimeError(f"下载失败 {url}: {e}") from e
+    raise RuntimeError(f"下载失败 {url}: {last_err}")
+
+
+def download_body_images(
+    urls: list[str],
+    token: str,
+    out: Path,
+    repo: str,
+    tree_image_paths: list[str],
+    prev_index: dict | None = None,
+    reuse: bool = True,
+    max_bytes: int = BODY_IMAGE_MAX_BYTES,
+    aliases: dict | None = None,
+) -> tuple[dict, int, int, int]:
+    """下载 PR/Issue/Release 正文中的外链图片。
+
+    返回 (image_map 原始URL→assets相对路径, 新下载, 复用, 失败/跳过)。
+    增量键：assets/.index.json 中的 ``ext:<url>``（键为 markdown 原始 URL）。
+    ``aliases``：原始 URL → 实际可下载地址（如 GraphQL 解析出的 private-user-images）。
+    保存时合并磁盘上已有键，避免覆盖树图片的 path→sha。
+    """
+    assets_dir = out / "assets"
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    index = load_asset_index(out)
+    if prev_index:
+        index.update(prev_index)
+    image_map: dict[str, str] = {}
+    aliases = aliases or {}
+    n_new = 0
+    n_skip = 0
+    n_fail = 0
+
+    for url in urls:
+        if not url or url.startswith("data:"):
+            continue
+        # 相对路径交给查看器按 assets/<path> 处理；此处只管绝对 URL
+        if not re.match(r"^https?://", url, re.I):
+            continue
+        # 仓库树内已有 → 直接映射，不重复下载
+        local = resolve_repo_image_url(url, repo, tree_image_paths)
+        if local:
+            image_map[url] = local
+            n_skip += 1
+            continue
+        key = f"ext:{url}"
+        rel = index.get(key) if reuse else None
+        if isinstance(rel, str) and rel:
+            dst = assets_dir / rel
+            if dst.exists() and dst.stat().st_size > 0:
+                image_map[url] = rel
+                n_skip += 1
+                continue
+        fetch_url = aliases.get(url) or url
+        try:
+            data, ctype = fetch_image_bytes(fetch_url, token, max_bytes)
+            if not data:
+                n_fail += 1
+                continue
+            ext = guess_ext_from_url_ct(fetch_url, ctype) or guess_ext_from_url_ct(url, ctype) or sniff_image_ext(data) or ".png"
+            rel = body_image_rel(url, ext)
+            dst = assets_dir / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_bytes(data)
+            index[key] = rel
+            image_map[url] = rel
+            n_new += 1
+            if n_new % 20 == 0:
+                log(f"  正文图片: {n_new}")
+        except Exception as e:
+            n_fail += 1
+            hint = "（已尝试 GraphQL 别名）" if fetch_url != url else ""
+            log(f"  [warn] 正文图片失败 {url[:100]}{hint}: {e}")
+
+    save_asset_index(out, index)
+    log(f"  正文图片: 新下 {n_new}, 复用 {n_skip}, 失败/跳过 {n_fail}, 映射 {len(image_map)}")
+    return image_map, n_new, n_skip, n_fail
+
+
 def app_root() -> Path:
     """脚本运行时为源码目录；打包为 exe 时为解包资源目录或 exe 旁目录。"""
     if getattr(sys, "frozen", False):
@@ -475,6 +969,7 @@ def export(args) -> Path:
         "exported_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "exporter": "Mirror_export",
         "incremental": incremental and bool(prev),
+        "image_map": {},
         "limits": {
             "prs": args.max_prs,
             "issues": args.max_issues,
@@ -972,7 +1467,14 @@ def export(args) -> Path:
         "tree_truncated": truncated,
     }
 
-    # --- download images (增量按 blob sha) ---
+    # --- download images (增量按 blob sha) + 正文外链图片 ---
+    tree_image_paths = [
+        t.get("path") or ""
+        for t in tree_items
+        if (t.get("type") == "blob")
+        and Path(t.get("path") or "").suffix.lower() in IMAGE_EXT
+        and not any((t.get("path") or "").startswith(p) for p in SKIP_DIR_PREFIX)
+    ]
     if not args.no_assets:
         log("下载图片资源 ...")
         img_new, img_skip = download_repo_images(
@@ -980,9 +1482,36 @@ def export(args) -> Path:
         )
         meta["file_stats"]["images"] = img_new
         meta["file_stats"]["images_reused"] = img_skip
+        # PR/Issue/Release 正文中的外链图片（user-attachments 等）
+        body_urls = collect_body_image_urls(prs, issues, releases)
+        if body_urls:
+            log(f"下载正文图片 ({len(body_urls)} 个 URL) ...")
+            # 私有库 user-attachments 直链 404：先 GraphQL bodyHTML 解析成可下载 CDN URL
+            aliases = resolve_attachment_aliases(repo, prs, issues, releases, token)
+            image_map, b_new, b_skip, b_fail = download_body_images(
+                body_urls,
+                token,
+                out,
+                repo,
+                tree_image_paths,
+                reuse=incremental,
+                aliases=aliases,
+            )
+            meta["image_map"] = image_map
+            meta["file_stats"]["body_images"] = b_new
+            meta["file_stats"]["body_images_reused"] = b_skip
+            meta["file_stats"]["body_images_failed"] = b_fail
+        else:
+            meta["file_stats"]["body_images"] = 0
+            meta["file_stats"]["body_images_reused"] = 0
+            meta["file_stats"]["body_images_failed"] = 0
     else:
         meta["file_stats"]["images"] = 0
         meta["file_stats"]["images_reused"] = 0
+        meta["file_stats"]["body_images"] = 0
+        meta["file_stats"]["body_images_reused"] = 0
+        meta["file_stats"]["body_images_failed"] = 0
+        meta["image_map"] = {}
 
     # --- branches (轻量，用于筛选) ---
     log("拉取 branches ...")
@@ -1051,7 +1580,8 @@ def main():
                     help="不缓存源码文件内容（只保留文件树）")
     ap.add_argument("--max-commit-diffs", type=int, default=None,
                     help="本轮最多新拉多少条 commit 的文件 diff；默认与 --max-commits 相同")
-    ap.add_argument("--no-assets", action="store_true", help="不下载图片资源（README 图片将无法离线显示）")
+    ap.add_argument("--no-assets", action="store_true",
+                    help="不下载图片资源（README / PR / Issue 正文图片将无法离线显示）")
     args = ap.parse_args()
 
     if not args.out:

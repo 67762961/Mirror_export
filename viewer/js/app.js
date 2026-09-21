@@ -114,7 +114,62 @@
   }
 
   function processRichHtml(html) {
-    return rewriteInternalUrls(linkifyRefs(html));
+    return rewriteInternalUrls(rewriteMappedImgSrcs(linkifyRefs(html)));
+  }
+
+  /** 把 HTML <img src> 中已下载的外链映射为 assets 本地路径，并规范展示属性 */
+  function rewriteMappedImgSrcs(html) {
+    return String(html).replace(/<img\b[^>]*>/gi, (tag) => normalizeImgTag(tag));
+  }
+
+  function lookupImageMap(src, map) {
+    if (!src || !map) return null;
+    if (map[src]) return map[src];
+    const bare = String(src).split("#")[0].split("?")[0];
+    if (map[bare]) return map[bare];
+    return null;
+  }
+
+  /** 规范 <img>：映射本地路径、去掉原始 width/height、补 md-img 与预览提示 */
+  function normalizeImgTag(tag) {
+    const map = (D.meta && D.meta.image_map) || {};
+    let src = "";
+    const srcM = /\bsrc\s*=\s*(["'])([^"']+)\1/i.exec(tag) || /\bsrc\s*=\s*([^\s>]+)/i.exec(tag);
+    if (srcM) src = srcM[2] != null ? srcM[2] : srcM[1];
+    const mapped = lookupImageMap(mdHref(src), map);
+    const finalSrc = mapped ? "assets/" + mapped : src;
+    let alt = "";
+    const altM = /\balt\s*=\s*(["'])([^"']*)\1/i.exec(tag);
+    if (altM) alt = altM[2];
+    const full = finalSrc || src || "";
+    return (
+      `<img class="md-img" src="${esc(finalSrc)}" alt="${esc(alt)}"` +
+      ` data-full-src="${esc(full)}" loading="lazy"` +
+      ` title="${esc(alt ? alt + " · 右键新标签打开原图" : "右键新标签打开原图")}"` +
+      ` onerror="this.classList.add('md-img-broken')" />`
+    );
+  }
+
+  /** 表格单元格：图片包一层等高容器，便于并列对比 */
+  function wrapImgCell(html) {
+    const s = String(html || "");
+    const hasImg = /<img\b/i.test(s);
+    // restore 前可能是 HB 占位符（\u0000HB0\u0000）
+    const hasHb = /\u0000HB\d+\u0000/.test(s);
+    if (!hasImg && !hasHb) return s;
+    if (/class="md-img-cell"/.test(s)) return s;
+    return `<div class="md-img-cell">${s}</div>`;
+  }
+
+  function mdImgHtml(src, alt) {
+    const local = mdSrc(src);
+    const full = local;
+    return (
+      `<img class="md-img" src="${local}" alt="${esc(alt || "")}" loading="lazy"` +
+      ` data-full-src="${esc(full)}"` +
+      ` title="${esc(alt ? alt + " · 右键新标签打开原图" : "右键新标签打开原图")}"` +
+      ` onerror="this.classList.add('md-img-broken')">`
+    );
   }
 
   /* ---------- lightweight Markdown (GitHub-like) ---------- */
@@ -128,7 +183,7 @@
     });
     // images（支持 ![alt](url) 与 ![alt](<url>)；后者在 esc 后变成 &lt;url&gt;）
     s = s.replace(/!\[([^\]]*)\]\(\s*(&lt;[^&]+?&gt;|<[^>]+>|[^)\s]+)\s*\)/g, (_, alt, src) => {
-      return `<img class="md-img" src="${mdSrc(src)}" alt="${esc(alt)}" loading="lazy" onerror="this.classList.add('md-img-broken')">`;
+      return mdImgHtml(src, alt);
     });
     // markdown links
     s = s.replace(/\[([^\]]+)\]\(\s*(&lt;[^&]+?&gt;|<[^>]+>|[^)\s]+)\s*\)/g, (_, label, href) => {
@@ -185,6 +240,9 @@
 
   function mdSrc(src) {
     src = mdHref(src);
+    const map = (D.meta && D.meta.image_map) || {};
+    const mapped = lookupImageMap(src, map);
+    if (mapped) return esc("assets/" + mapped);
     if (/^(https?:|data:)/i.test(src)) return esc(src);
     const clean = src.replace(/^\.\//, "").replace(/^\//, "");
     return esc("assets/" + clean);
@@ -310,9 +368,10 @@
       htmlBlocks.push(m);
       return `\n\n HB${htmlBlocks.length - 1} \n\n`;
     });
-    text = text.replace(/<(br|hr|img)\b[^>]*\/?>((?:\n)?)/gi, (m) => {
+    // img/br/hr 用行内占位（勿加换行），否则会打断 |图1|图2| 表格行
+    text = text.replace(/<(br|hr|img)\b[^>]*\/?>/gi, (m) => {
       htmlBlocks.push(m);
-      return `\n\n HB${htmlBlocks.length - 1} \n\n`;
+      return ` HB${htmlBlocks.length - 1} `;
     });
 
     const lines = text.split("\n");
@@ -331,6 +390,8 @@
           .replace(/<!--[\s\S]*?-->/g, "")
           .replace(/<script[\s\S]*?<\/script>/gi, "")
           .replace(/<iframe[\s\S]*?<\/iframe>/gi, "");
+        // 原始 HTML <img> 也走 image_map
+        block = rewriteMappedImgSrcs(block);
         return block.replace(/(^|[\s(>])#(\d{1,7})\b/g, (mm, pre, n) => pre + refHtml(n));
       });
     }
@@ -542,13 +603,7 @@
             listPara.lines.push(trimmed);
             i++;
           } else {
-            appendToLastListItem(
-              `<div class="md-table-wrap"><table class="md-table"><thead><tr>${headers
-                .map((c) => `<th>${mdInline(c)}</th>`)
-                .join("")}</tr></thead><tbody>${rows
-                .map((r) => `<tr>${r.map((c) => `<td>${mdInline(c)}</td>`).join("")}</tr>`)
-                .join("")}</tbody></table></div>`
-            );
+            appendToLastListItem(renderMdTable(headers, rows));
           }
           continue;
         }
@@ -584,13 +639,7 @@
           rows.push(splitRow(lines[i]));
           i++;
         }
-        out.push(
-          `<div class="md-table-wrap"><table class="md-table"><thead><tr>${headers
-            .map((c) => `<th>${mdInline(c)}</th>`)
-            .join("")}</tr></thead><tbody>${rows
-            .map((r) => `<tr>${r.map((c) => `<td>${mdInline(c)}</td>`).join("")}</tr>`)
-            .join("")}</tbody></table></div>`
-        );
+        out.push(renderMdTable(headers, rows));
         continue;
       }
 
@@ -634,6 +683,27 @@
     const h = mdToHtml(text);
     if (!h || h === "") return `<div class="empty">（无内容）</div>`;
     return `<div class="markdown-body">${upgradeMdLinks(h)}</div>`;
+  }
+
+  /** Markdown 表格：图片单元格等高并列（|图1|图2| 对比表） */
+  function renderMdTable(headers, rows) {
+    const rawAll = headers.concat(...rows).join("\n");
+    const cookedAll =
+      headers.map((c) => mdInline(c)).join("") +
+      rows.map((r) => r.map((c) => mdInline(c)).join("")).join("");
+    const hasImg =
+      /<img\b/i.test(cookedAll) ||
+      /!\[|user-attachments|data-full-src|<img\b/i.test(rawAll) ||
+      /\u0000HB\d+\u0000/.test(cookedAll + rawAll);
+    const headCells = headers.map((c) => `<th>${wrapImgCell(mdInline(c))}</th>`).join("");
+    const bodyRows = rows
+      .map((r) => `<tr>${r.map((c) => `<td>${wrapImgCell(mdInline(c))}</td>`).join("")}</tr>`)
+      .join("");
+    const cls = hasImg ? "md-table md-img-compare" : "md-table";
+    return (
+      `<div class="md-table-wrap"><table class="${cls}">` +
+      `<thead><tr>${headCells}</tr></thead><tbody>${bodyRows}</tbody></table></div>`
+    );
   }
 
   function labelHtml(labels) {
@@ -1414,6 +1484,56 @@
     bindContent();
   }
 
+  /* ---------- 图片：右键在新标签页打开原图（保留当前页） ---------- */
+  function openImageInNewTab(src) {
+    if (!src) return;
+    try {
+      const url = new URL(src, window.location.href).href;
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (e) {
+      window.open(src, "_blank", "noopener");
+    }
+  }
+
+  function enhanceMarkdownImages(root) {
+    if (!root) return;
+    root.querySelectorAll("img.md-img, .markdown-body img, .md-table img").forEach((img) => {
+      img.removeAttribute("width");
+      img.removeAttribute("height");
+      img.classList.add("md-img");
+      const src = img.getAttribute("src") || "";
+      if (!img.getAttribute("data-full-src")) {
+        img.setAttribute("data-full-src", src);
+      }
+      const alt = img.getAttribute("alt") || "";
+      img.setAttribute("title", alt ? `${alt} · 右键新标签打开原图` : "右键新标签打开原图");
+      if (!img.dataset.mdBound) {
+        img.dataset.mdBound = "1";
+        img.addEventListener("contextmenu", (e) => {
+          e.preventDefault();
+          const full = img.getAttribute("data-full-src") || img.getAttribute("src") || "";
+          openImageInNewTab(full);
+        });
+      }
+    });
+    root.querySelectorAll("table").forEach((table) => {
+      if (table.querySelector("td img, th img, .md-img-cell")) {
+        table.classList.add("md-img-compare");
+        table.querySelectorAll("td, th").forEach((cell) => {
+          if (cell.querySelector(".md-img-cell")) return;
+          if (!cell.querySelector("img")) {
+            cell.classList.add("md-img-cell-empty");
+            return;
+          }
+          const wrap = document.createElement("div");
+          wrap.className = "md-img-cell";
+          while (cell.firstChild) wrap.appendChild(cell.firstChild);
+          cell.appendChild(wrap);
+        });
+      }
+    });
+  }
+
   function bindContent() {
     const content = $("#content");
 
@@ -1524,6 +1644,8 @@
         render();
       });
     }
+
+    enhanceMarkdownImages(content);
   }
 
   function boot() {

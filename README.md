@@ -25,7 +25,8 @@
 6. 完成后点 **打开输出目录**，把整个文件夹拷进内网
 
 配置缓存文件：exe 同目录的 `gh_token_cache.json`（Token、仓库、输出路径）。
-导出包内：`data/*.js` + `assets/.index.json`（文件/图片 blob sha，用于判断变化）。
+导出包内：`data/*.js` + `assets/.index.json`（文件/图片 blob sha、正文外链图 `ext:<url>`，用于判断变化）。
+PR / Issue / Release 正文里的截图（如 `user-attachments`）会下载到 `assets/externals/`，映射写在 `meta.image_map`，内网可离线显示。
 
 ### 方式 B：源码（需要 Python 3.8+）
 
@@ -55,6 +56,8 @@ gh-mirror-67762961-Csv_reader-20260914/
   css/app.css
   js/app.js
   data/*.js
+  assets/            # README 树内图片
+  assets/externals/  # PR/Issue/Release 正文外链图片
 ```
 
 把**整个文件夹**拷到 U 盘。
@@ -69,10 +72,10 @@ gh-mirror-67762961-Csv_reader-20260914/
 
 ## 功能说明
 
-- **PR 列表**：筛选打开 / 已合并 / 已关闭，点进详情看描述、评论、文件 diff
-- **Issue 列表**：同样支持筛选与详情评论
+- **PR 列表**：筛选打开 / 已合并 / 已关闭，点进详情看描述、评论、文件 diff；正文 Markdown 图片若已导出则本地显示
+- **Issue 列表**：同样支持筛选与详情评论；评论中的图片同样走 `image_map` 本地化
 - **Commit**：默认分支提交历史，含完整 message
-- **Tag / Release**：标签与发行说明
+- **Tag / Release**：标签与发行说明；body 中的图片同样会被下载
 - **版本对比**：基于已导出 commit 的近似对比（选 base → head）
 - **文件浏览**：默认分支文件树 + 已缓存的文本源码
 
@@ -84,6 +87,7 @@ gh-mirror-67762961-Csv_reader-20260914/
 | 默认最多 80 PR / 80 Issue / 200 Commit | 控制包体积，可用 `--max-*` 调大 |
 | 单文件 >400KB 不缓存正文 | 只保留文件树条目 |
 | 二进制不缓存 | `.mat` / `.png` / `.xlsx` 等仅列路径 |
+| 单张图片 >2MB 不下载 | 树内图与 PR/Issue 正文外链图共用上限；`--no-assets` 则全部跳过 |
 | 版本对比是近似 | 完整 compare API 可再扩展 |
 | 速率限制 | Token 配额约 5000 次/小时，脚本会自动等待 |
 
