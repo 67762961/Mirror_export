@@ -16,6 +16,8 @@
     showMdRaw: false,
     compareBase: null,
     compareHead: null,
+    rangeKey: "7",
+    rangeCustomDays: 30,
   };
   // 换页导航历史（栈底 → 栈顶）；过滤/搜索/compare 不入栈
   const navHistory = [];
@@ -993,6 +995,311 @@
       </div>`;
   }
 
+  /* ---------- contribution wall ---------- */
+  function localDayKey(d) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  }
+
+  function dayKey(iso) {
+    if (!iso) return null;
+    try {
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return null;
+      return localDayKey(d);
+    } catch {
+      return null;
+    }
+  }
+
+  function parseDayKey(key) {
+    const [y, m, d] = String(key).split("-").map(Number);
+    return new Date(y, (m || 1) - 1, d || 1);
+  }
+
+  function resolveTagDate(tag) {
+    if (!tag) return null;
+    const rel = (D.releases || []).find((r) => r.tag_name === tag.name);
+    if (rel) {
+      const k = dayKey(rel.published_at || rel.created_at);
+      if (k) return k;
+    }
+    const sha = tag.sha;
+    if (sha) {
+      const c = (D.commits || []).find((x) => {
+        if (!x.sha) return false;
+        return x.sha === sha || String(sha).startsWith(String(x.sha)) || String(x.sha).startsWith(String(sha));
+      });
+      if (c) {
+        const k = dayKey(c.author_date || c.committer_date);
+        if (k) return k;
+      }
+    }
+    return null;
+  }
+
+  let activityCache = null;
+  function getActivityIndex() {
+    if (activityCache) return activityCache;
+    const map = new Map();
+    const bump = (key, type) => {
+      if (!key) return;
+      let e = map.get(key);
+      if (!e) {
+        e = { commit: 0, pr: 0, issue: 0, tag: 0, release: 0, total: 0 };
+        map.set(key, e);
+      }
+      e[type] += 1;
+      e.total += 1;
+    };
+    (D.commits || []).forEach((c) => bump(dayKey(c.author_date || c.committer_date), "commit"));
+    (D.prs || []).forEach((p) => bump(dayKey(p.created_at), "pr"));
+    (D.issues || []).forEach((i) => bump(dayKey(i.created_at), "issue"));
+    (D.releases || []).forEach((r) => bump(dayKey(r.published_at || r.created_at), "release"));
+    let tagUnknown = 0;
+    (D.tags || []).forEach((t) => {
+      const k = resolveTagDate(t);
+      if (k) bump(k, "tag");
+      else tagUnknown += 1;
+    });
+    activityCache = { map, tagUnknown };
+    return activityCache;
+  }
+
+  function wallDateRange() {
+    const { map } = getActivityIndex();
+    const endIso = (D.meta && (D.meta.exported_at || D.meta.pushed_at)) || new Date().toISOString();
+    let end = dayKey(endIso) || localDayKey(new Date());
+    const keys = Array.from(map.keys()).sort();
+    let start = keys[0] || null;
+    if (!start) {
+      const d = parseDayKey(end);
+      d.setFullYear(d.getFullYear() - 1);
+      start = localDayKey(d);
+    }
+    return { start, end };
+  }
+
+  function emptyDayBuckets() {
+    return { commit: 0, pr: 0, issue: 0, tag: 0, release: 0, total: 0 };
+  }
+
+  function levelForCount(n, positives) {
+    if (!n || n <= 0) return 0;
+    if (positives.length <= 3) {
+      if (n <= 1) return 1;
+      if (n <= 3) return 2;
+      return n <= 6 ? 3 : 4;
+    }
+    const sorted = positives.slice().sort((a, b) => a - b);
+    const quantile = (p) => {
+      const idx = (sorted.length - 1) * p;
+      const lo = Math.floor(idx);
+      const hi = Math.ceil(idx);
+      return sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo);
+    };
+    const q1 = quantile(0.25);
+    const q2 = quantile(0.5);
+    const q3 = quantile(0.75);
+    if (n <= q1) return 1;
+    if (n <= q2) return 2;
+    if (n <= q3) return 3;
+    return 4;
+  }
+
+  function contribTip(day, bucket) {
+    const b = bucket || emptyDayBuckets();
+    const parts = [];
+    if (b.commit) parts.push(`${b.commit} 次提交`);
+    if (b.pr) parts.push(`${b.pr} 个 PR`);
+    if (b.issue) parts.push(`${b.issue} 个 Issue`);
+    if (b.tag) parts.push(`${b.tag} 个 Tag`);
+    if (b.release) parts.push(`${b.release} 个 Release`);
+    const detail = parts.length ? parts.join(" · ") : "无贡献";
+    return `${day} · ${b.total} 次贡献：${detail}`;
+  }
+
+  function rangeWindowDays() {
+    switch (state.rangeKey) {
+      case "1": return 1;
+      case "7": return 7;
+      case "30": return 30;
+      case "90": return 90;
+      case "365": return 365;
+      case "all": return Infinity;
+      case "custom": {
+        const n = Number(state.rangeCustomDays);
+        return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 7;
+      }
+      default: return 7;
+    }
+  }
+
+  function summarizeRange() {
+    const { map, tagUnknown } = getActivityIndex();
+    const { start, end } = wallDateRange();
+    const days = rangeWindowDays();
+    let fromKey = start;
+    if (Number.isFinite(days)) {
+      const from = parseDayKey(end);
+      from.setDate(from.getDate() - (days - 1));
+      fromKey = localDayKey(from);
+    }
+    // 与墙一致：含 from 与 end
+    const acc = emptyDayBuckets();
+    for (const [k, v] of map.entries()) {
+      if (k < fromKey || k > end) continue;
+      acc.commit += v.commit;
+      acc.pr += v.pr;
+      acc.issue += v.issue;
+      acc.tag += v.tag;
+      acc.release += v.release;
+      acc.total += v.total;
+    }
+    let label;
+    if (state.rangeKey === "1") label = "今天";
+    else if (state.rangeKey === "all") label = "从最初";
+    else if (state.rangeKey === "custom") label = `最近 ${rangeWindowDays()} 天`;
+    else label = `最近 ${rangeWindowDays()} 天`;
+    return { acc, label, tagUnknown, fromKey, end };
+  }
+
+  function renderContribWall() {
+    const { map, tagUnknown } = getActivityIndex();
+    const { start, end } = wallDateRange();
+    const startD = parseDayKey(start);
+    // 对齐到周日（与 GitHub 一致）
+    const gridStart = new Date(startD);
+    gridStart.setDate(gridStart.getDate() - gridStart.getDay());
+
+    const positives = [];
+    for (const v of map.values()) {
+      if (v.total > 0) positives.push(v.total);
+    }
+
+    const weeks = [];
+    const months = [];
+    let prevMonth = null;
+    let cursor = new Date(gridStart);
+    const endD = parseDayKey(end);
+    while (cursor <= endD) {
+      const col = [];
+      for (let i = 0; i < 7; i++) {
+        const y = cursor.getFullYear();
+        const m = String(cursor.getMonth() + 1).padStart(2, "0");
+        const dd = String(cursor.getDate()).padStart(2, "0");
+        const day = `${y}-${m}-${dd}`;
+        const bucket = map.get(day) || emptyDayBuckets();
+        const inRange = day >= start && day <= end;
+        const lv = inRange ? levelForCount(bucket.total, positives) : 0;
+        col.push({
+          day,
+          lv: inRange ? lv : -1,
+          tip: inRange ? contribTip(day, bucket) : "",
+          muted: !inRange,
+        });
+        cursor.setDate(cursor.getDate() + 1);
+      }
+      // 月份标签：该列周日所在月与上一列不同则显示
+      const weekMonth = new Date(parseDayKey(col[0].day));
+      const mm = weekMonth.getMonth();
+      months.push(mm !== prevMonth ? weekMonth.getMonth() + 1 : 0);
+      prevMonth = mm;
+      weeks.push(col);
+    }
+
+    const monthHtml = months
+      .map((mo) => `<div class="contrib-month-label">${mo ? mo + "月" : ""}</div>`)
+      .join("");
+    const weekHtml = weeks
+      .map(
+        (col) =>
+          `<div class="contrib-week">${col
+            .map((cell) => {
+              if (cell.muted || cell.lv < 0) {
+                return `<div class="cw-cell" style="visibility:hidden"></div>`;
+              }
+              const lvClass = cell.lv > 0 ? ` l${cell.lv}` : "";
+              return `<div class="cw-cell${lvClass}" title="${esc(cell.tip)}"></div>`;
+            })
+            .join("")}</div>`
+      )
+      .join("");
+
+    const legendHtml = [0, 1, 2, 3, 4]
+      .map((lv) => `<div class="cw-cell${lv ? " l" + lv : ""}"></div>`)
+      .join("");
+
+    const sum = summarizeRange();
+    const rangeOptions = [
+      ["1", "1 天"],
+      ["7", "7 天"],
+      ["30", "一个月"],
+      ["90", "三个月"],
+      ["365", "一年"],
+      ["all", "从最初"],
+      ["custom", "自定义…"],
+    ]
+      .map(([v, lab]) => `<option value="${v}"${state.rangeKey === v ? " selected" : ""}>${lab}</option>`)
+      .join("");
+
+    const summaryHtml = renderRangeSummaryText(sum);
+
+    return `
+      <div class="panel">
+        <div class="panel-hd">贡献墙</div>
+        <div class="panel-bd contrib-body">
+          <div class="contrib-scroll" id="contrib-scroll">
+            <div class="contrib-inner">
+              <div class="contrib-months">${monthHtml}</div>
+              <div class="contrib-main">
+                <div class="contrib-dow" aria-hidden="true">
+                  <span></span><span>一</span><span></span><span>三</span><span></span><span>五</span><span></span>
+                </div>
+                <div class="contrib-weeks">${weekHtml}</div>
+              </div>
+            </div>
+          </div>
+          <div class="contrib-footer">
+            <div class="contrib-legend">Less${legendHtml}More</div>
+            <div class="cw-summary">
+              <select id="cw-range" aria-label="汇总时间范围">${rangeOptions}</select>
+              <input id="cw-custom-days" type="number" min="1" max="20000" step="1"
+                value="${esc(String(state.rangeCustomDays))}"
+                ${state.rangeKey === "custom" ? "" : "hidden"}
+                aria-label="自定义天数" />
+              <span id="cw-summary-text">${summaryHtml}</span>
+            </div>
+          </div>
+          ${tagUnknown ? `<div class="muted small">另有 ${tagUnknown} 个 Tag 日期未知，未计入热力图。</div>` : ""}
+        </div>
+      </div>
+    `;
+  }
+
+  function renderRangeSummaryText(sum) {
+    const n = (x) => `<span class="cw-num">${x}</span>`;
+    const parts = [
+      `${n(sum.acc.commit)} 次提交`,
+      `${n(sum.acc.pr)} 个 PR`,
+      `${n(sum.acc.issue)} 个 Issue`,
+      `${n(sum.acc.tag)} 个 Tag`,
+      `${n(sum.acc.release)} 个 Release`,
+    ];
+    let note = "";
+    if (sum.tagUnknown) {
+      note = `（另有 ${sum.tagUnknown} 个 Tag 日期未知）`;
+    }
+    return `${esc(sum.label)}：${parts.join("、")}${note}`;
+  }
+
+  function scrollContribToEnd() {
+    const sc = document.getElementById("contrib-scroll");
+    if (sc) sc.scrollLeft = sc.scrollWidth;
+  }
+
   /* ---------- overview ---------- */
   function renderOverview() {
     const m = D.meta;
@@ -1029,6 +1336,7 @@
           </dl>
         </div>
       </div>
+      ${renderContribWall()}
       <div class="panel">
         <div class="panel-hd">最近提交</div>
         <div class="panel-bd" style="padding:0">
@@ -1548,6 +1856,8 @@
     }
     el.innerHTML = html;
     bindContent();
+    // 贡献墙默认停在最右侧（最新）；下拉变更后也会经 render 再次拉回最右
+    if (state.view === "overview") scrollContribToEnd();
   }
 
   /* ---------- 图片：右键在新标签页打开原图（保留当前页） ---------- */
@@ -1688,6 +1998,26 @@
         setView(view, { pushHistory: false });
       });
     });
+
+    // 贡献墙汇总时间窗：不缩放热力图；变更后将墙拉回最右（经 render → scrollContribToEnd）
+    const rangeSel = $("#cw-range");
+    if (rangeSel) {
+      rangeSel.addEventListener("change", () => {
+        state.rangeKey = rangeSel.value;
+        render();
+      });
+    }
+    const customDays = $("#cw-custom-days");
+    if (customDays) {
+      const applyCustomDays = () => {
+        const n = Number(customDays.value);
+        state.rangeCustomDays = Number.isFinite(n) && n >= 1 ? Math.floor(n) : 1;
+        const tip = $("#cw-summary-text");
+        if (tip) tip.innerHTML = renderRangeSummaryText(summarizeRange());
+      };
+      customDays.addEventListener("input", applyCustomDays);
+      customDays.addEventListener("change", applyCustomDays);
+    }
 
     const cmpRun = $("#cmp-run");
     if (cmpRun) {
