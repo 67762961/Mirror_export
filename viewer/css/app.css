@@ -594,6 +594,122 @@ tr.hunk td {
 }
 .stat-l { font-size: 12px; color: var(--text-muted); }
 
+/* ---- Contribution wall ---- */
+.contrib-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.contrib-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 4px;
+}
+.contrib-inner {
+  display: inline-block;
+  min-width: 100%;
+}
+.contrib-months {
+  display: flex;
+  align-items: center;
+  height: 18px;
+  margin-left: 31px;
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1;
+  white-space: nowrap;
+}
+.contrib-month-label {
+  width: 19px;
+  flex: 0 0 19px;
+  overflow: visible;
+}
+.contrib-main {
+  display: flex;
+  gap: 3px;
+}
+.contrib-dow {
+  width: 28px;
+  flex: 0 0 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 10px;
+  color: var(--text-faint);
+  line-height: 16px;
+}
+.contrib-dow span {
+  height: 16px;
+  line-height: 16px;
+}
+.contrib-weeks {
+  display: flex;
+  gap: 3px;
+}
+.contrib-week {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.cw-cell {
+  width: 16px;
+  height: 16px;
+  border-radius: 2px;
+  background: #ebedf0;
+  border: 1px solid rgba(27, 31, 35, 0.06);
+}
+.cw-cell.l1 { background: #9be9a8; }
+.cw-cell.l2 { background: #40c463; }
+.cw-cell.l3 { background: #30a14e; }
+.cw-cell.l4 { background: #216e39; }
+.contrib-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+}
+.contrib-legend {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.contrib-legend .cw-cell {
+  display: inline-block;
+}
+.cw-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--text);
+}
+.cw-summary select {
+  flex-shrink: 0;
+}
+.cw-summary input[type="number"] {
+  width: 72px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+#cw-summary-text {
+  min-width: 0;
+}
+#cw-summary-text .cw-num {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
 /* ---- GitHub-like Markdown ---- */
 .markdown-body {
   font-size: 16px;
