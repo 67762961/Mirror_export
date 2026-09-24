@@ -17,6 +17,8 @@
     compareBase: null,
     compareHead: null,
   };
+  // 换页导航历史（栈底 → 栈顶）；过滤/搜索/compare 不入栈
+  const navHistory = [];
 
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
@@ -859,8 +861,72 @@
   }
 
   /* ---------- navigation ---------- */
+  function snapshot() {
+    return {
+      view: state.view,
+      prFilter: state.prFilter,
+      issueFilter: state.issueFilter,
+      prDetail: state.prDetail,
+      issueDetail: state.issueDetail,
+      commitDetail: state.commitDetail,
+      releaseDetail: state.releaseDetail,
+      search: state.search,
+      filePath: state.filePath,
+      compareBase: state.compareBase,
+      compareHead: state.compareHead,
+    };
+  }
+
+  function restore(snap) {
+    state.view = snap.view;
+    state.prFilter = snap.prFilter;
+    state.issueFilter = snap.issueFilter;
+    state.prDetail = snap.prDetail;
+    state.issueDetail = snap.issueDetail;
+    state.commitDetail = snap.commitDetail;
+    state.releaseDetail = snap.releaseDetail;
+    state.search = snap.search;
+    state.filePath = snap.filePath;
+    state.compareBase = snap.compareBase;
+    state.compareHead = snap.compareHead;
+    state.showMdRaw = false;
+  }
+
+  function clearDetails() {
+    state.prDetail = null;
+    state.issueDetail = null;
+    state.commitDetail = null;
+    state.releaseDetail = null;
+    state.filePath = null;
+  }
+
+  function pushHistory() {
+    navHistory.push(snapshot());
+  }
+
+  function goBack() {
+    if (navHistory.length) {
+      restore(navHistory.pop());
+      const s = $("#global-search");
+      if (s) s.value = state.search || "";
+    } else {
+      // 无更早历史：回退到当前视图对应列表
+      clearDetails();
+    }
+    $$(".nav-item").forEach((b) => b.classList.toggle("active", b.dataset.view === state.view));
+    render();
+  }
+
   function setView(view, opts = {}) {
+    const push = opts.pushHistory !== false;
+    if (push) pushHistory();
     state.view = view;
+    if (opts.clearSearch) {
+      state.search = "";
+      const s = $("#global-search");
+      if (s) s.value = "";
+    }
+    if (opts.clearDetails) clearDetails();
     if (opts.prDetail !== undefined) state.prDetail = opts.prDetail;
     if (opts.issueDetail !== undefined) state.issueDetail = opts.issueDetail;
     if (opts.commitDetail !== undefined) state.commitDetail = opts.commitDetail;
@@ -1008,7 +1074,7 @@
     const files = pr.files || [];
     const prCommits = pr.commits_list || [];
     return `
-      <button class="back-link" data-back="prs">← 返回 PR 列表</button>
+      <button class="back-link" data-nav-back>← 返回</button>
       <div class="detail-hd">
         <span class="state-dot ${prStateClass(pr)}" style="margin-top:8px"></span>
         <div>
@@ -1123,7 +1189,7 @@
   function renderIssueDetail(issue) {
     const cb = issue.closed_by_pr;
     return `
-      <button class="back-link" data-back="issues">← 返回 Issue 列表</button>
+      <button class="back-link" data-nav-back>← 返回</button>
       <div class="detail-hd">
         <span class="state-dot ${issue.state === "open" ? "state-open" : "state-closed"}" style="margin-top:8px"></span>
         <div>
@@ -1184,7 +1250,7 @@
     const files = c.files || [];
     const rest = (c.message || "").split("\n").slice(1).join("\n").trim();
     return `
-      <button class="back-link" data-back="commits">← 返回 Commit 列表</button>
+      <button class="back-link" data-nav-back>← 返回</button>
       <div class="detail-hd">
         <div>
           <h1 class="detail-title">${esc((c.message || "").split("\n")[0])}</h1>
@@ -1275,7 +1341,7 @@
     const commits = cmp.commits || [];
     const prs = (r.related_prs || []).slice().sort(byNumberDesc);
     return `
-      <button class="back-link" data-back="tags">← 返回 Releases</button>
+      <button class="back-link" data-nav-back>← 返回</button>
       <div class="detail-hd">
         <div>
           <h1 class="detail-title">${esc(r.name || r.tag_name)}</h1>
@@ -1538,26 +1604,19 @@
     const content = $("#content");
 
     content.querySelectorAll("[data-pr]").forEach((n) => {
-      n.addEventListener("click", () => setView("prs", { prDetail: Number(n.dataset.pr) }));
+      n.addEventListener("click", () => setView("prs", { prDetail: Number(n.dataset.pr), clearDetails: true }));
     });
     content.querySelectorAll("[data-issue]").forEach((n) => {
-      n.addEventListener("click", () => setView("issues", { issueDetail: Number(n.dataset.issue) }));
+      n.addEventListener("click", () => setView("issues", { issueDetail: Number(n.dataset.issue), clearDetails: true }));
     });
     content.querySelectorAll("[data-commit]").forEach((n) => {
-      n.addEventListener("click", () => setView("commits", { commitDetail: n.dataset.commit }));
+      n.addEventListener("click", () => setView("commits", { commitDetail: n.dataset.commit, clearDetails: true }));
     });
     content.querySelectorAll("[data-release]").forEach((n) => {
-      n.addEventListener("click", () => setView("tags", { releaseDetail: n.dataset.release }));
+      n.addEventListener("click", () => setView("tags", { releaseDetail: n.dataset.release, clearDetails: true }));
     });
-    content.querySelectorAll("[data-back]").forEach((n) => {
-      n.addEventListener("click", () => {
-        const v = n.dataset.back;
-        if (v === "prs") setView(v, { prDetail: null });
-        else if (v === "issues") setView(v, { issueDetail: null });
-        else if (v === "commits") setView(v, { commitDetail: null });
-        else if (v === "tags") setView(v, { releaseDetail: null });
-        else setView(v);
-      });
+    content.querySelectorAll("[data-nav-back]").forEach((n) => {
+      n.addEventListener("click", () => goBack());
     });
     content.querySelectorAll("[data-pr-filter]").forEach((n) => {
       n.addEventListener("click", () => {
@@ -1572,6 +1631,7 @@
       });
     });
     content.querySelectorAll("[data-path]").forEach((n) => {
+      // 文件树点选属于同页切换，不入导航历史
       n.addEventListener("click", () => {
         state.filePath = n.dataset.path;
         render();
@@ -1592,11 +1652,9 @@
         const num = Number(n.dataset.ref);
         const type = n.dataset.refType || (findIssueOrPr(num) || {}).type;
         if (type === "pr") {
-          state.releaseDetail = null;
-          setView("prs", { prDetail: num, issueDetail: null, commitDetail: null });
+          setView("prs", { prDetail: num, clearDetails: true });
         } else if (type === "issue") {
-          state.releaseDetail = null;
-          setView("issues", { issueDetail: num, prDetail: null, commitDetail: null });
+          setView("issues", { issueDetail: num, clearDetails: true });
         } else {
           // 未知编号：跳到对应列表搜索
           state.search = "";
@@ -1610,23 +1668,24 @@
     content.querySelectorAll("[data-commit-ref]").forEach((n) => {
       n.addEventListener("click", (e) => {
         e.preventDefault();
-        setView("commits", { commitDetail: n.dataset.commitRef });
+        setView("commits", { commitDetail: n.dataset.commitRef, clearDetails: true });
       });
     });
     content.querySelectorAll("[data-release-ref]").forEach((n) => {
       n.addEventListener("click", (e) => {
         e.preventDefault();
-        setView("tags", { releaseDetail: n.dataset.releaseRef });
+        setView("tags", { releaseDetail: n.dataset.releaseRef, clearDetails: true });
       });
     });
     content.querySelectorAll("[data-goto]").forEach((n) => {
       n.addEventListener("click", () => {
         const view = n.dataset.goto;
         const filt = n.dataset.gotoFilter;
+        pushHistory();
         if (view === "prs" && filt) state.prFilter = filt;
         if (view === "issues" && filt) state.issueFilter = filt;
-        if (view === "commits") state.commitDetail = null;
-        setView(view);
+        clearDetails();
+        setView(view, { pushHistory: false });
       });
     });
 
@@ -1671,14 +1730,7 @@
 
     $$(".nav-item").forEach((btn) => {
       btn.addEventListener("click", () => {
-        state.search = "";
-        const s = $("#global-search");
-        if (s) s.value = "";
-        state.prDetail = null;
-        state.issueDetail = null;
-        state.commitDetail = null;
-        state.releaseDetail = null;
-        setView(btn.dataset.view);
+        setView(btn.dataset.view, { clearDetails: true, clearSearch: true });
       });
     });
 

@@ -176,7 +176,9 @@ python export.py --repo owner/name --full   # 强制全量
 ### 4.3 `viewer/`（内网查看器）
 
 - `index.html` 固定按序加载 8 个 `data/*.js`，再加载 `js/app.js`；
-- `app.js` 从 `window.GH_DATA` 读数据，用 hash 路由切换视图；
+- `app.js` 从 `window.GH_DATA` 读数据，用内存 `state` 切换视图（无 hash 路由）；
+- 换页（侧栏 / 列表进详情 / 站内引用互跳）会把当前视图快照压入 `navHistory`；详情页顶部「← 返回」弹栈回到上一浏览页，栈空则清 detail 回当前列表；
+- 搜索、PR/Issue 过滤、文件树点选、compare 运行只重绘，不入导航历史；
 - 视图：`overview` / `prs` / `issues` / `commits` / `tags` / `compare` / `files` / `readme`；
 - 详情页支持：PR 文件 diff、Issue 评论、Commit message 与文件、Release compare 摘要、文件树与已缓存文本源码；
 - 正文中的 `#123` 与同仓库 GitHub 链接会被改写为站内跳转。
