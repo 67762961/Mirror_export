@@ -378,18 +378,32 @@ select, input[type="text"] {
   font-size: 13px;
   margin-top: 4px;
 }
+/* ← 返回：封闭圆角按钮，尺寸与标准 .btn 一致 */
 .back-link {
   appearance: none;
-  border: 0;
-  background: transparent;
-  color: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: 1px solid var(--border);
+  background: #f6f8fa;
+  color: var(--text);
+  border-radius: var(--radius);
   cursor: pointer;
   font: inherit;
   font-size: 13px;
-  padding: 0;
+  font-weight: 500;
+  line-height: 1.3;
+  padding: 6px 12px;
   margin-bottom: 10px;
 }
-.back-link:hover { text-decoration: underline; }
+.back-link:hover {
+  background: #eef1f4;
+  border-color: var(--text-muted, #8b949e);
+}
+.back-link:active {
+  background: #e6eaef;
+}
 
 .md {
   white-space: pre-wrap;
