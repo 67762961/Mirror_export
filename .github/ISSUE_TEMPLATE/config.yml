@@ -1,0 +1,6 @@
+blank_issues_enabled: false
+
+contact_links:
+  - name: ❓ 提问与讨论 (Q&A)
+    url: https://github.com/67762961/Csv_reader/discussions
+    about: 如果你的问题不是 Bug 或新功能请求，请在 Discussions 区提问。
