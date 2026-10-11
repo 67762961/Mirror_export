@@ -12,6 +12,7 @@ env/
 build/
 build_pyinstaller/
 dist/
+release/
 *.spec.bak
 
 # 导出缓存与运行时数据（含 Token 缓存，禁止入库）
