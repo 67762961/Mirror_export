@@ -382,8 +382,9 @@ class App(tk.Tk):
         )
         style.map(
             "TButton",
-            background=[("active", "#eaeef2"), ("disabled", subtle)],
-            foreground=[("disabled", muted)],
+            background=[("active", "#eaeef2"), ("disabled", bg)],
+            foreground=[("disabled", "#8c959f")],
+            bordercolor=[("disabled", border_muted)],
         )
         style.configure(
             "Accent.TButton",
@@ -397,12 +398,15 @@ class App(tk.Tk):
             "Accent.TButton",
             background=[("active", green_hover), ("disabled", "#8c959f")],
             foreground=[("disabled", "#ffffff")],
+            bordercolor=[("disabled", "#8c959f")],
         )
         style.configure("TCheckbutton", background=bg, foreground=ink, padding=(2, 4))
         style.map("TCheckbutton", background=[("active", bg)])
-        # 方块勾选贴图（供 SquareCheck 使用）
+        # 方块勾选贴图（供 SquareCheck 使用）；_dim 版用于导出期间禁用态
         self._chk_off = self._make_chk_image(False)
         self._chk_on = self._make_chk_image(True)
+        self._chk_off_dim = self._make_chk_image(False, dim=True)
+        self._chk_on_dim = self._make_chk_image(True, dim=True)
 
         style.configure(
             "TEntry",
@@ -501,23 +505,39 @@ class App(tk.Tk):
         except Exception:
             pass
 
-    def _make_chk_image(self, checked: bool) -> tk.PhotoImage:
-        """14x14 方块：空心 / 绿色实心，不用 ✕。"""
+    def _make_chk_image(self, checked: bool, dim: bool = False) -> tk.PhotoImage:
+        """14x14 方块：空心 / 绿色实心，不用 ✕。
+
+        dim=True 用于禁用态：勾选态换成中性灰（#8c959f），未勾选态换成更淡的
+        边（#e4e8ec）。tk.Checkbutton 的自绘贴图不会随 state="disabled" 变化，
+        没有灰版的话锁住了也看不出来。
+        """
         img = tk.PhotoImage(width=14, height=14)
         if checked:
             # 绿色实心 + 深一点边
-            img.put("#1a7f37", to=(0, 0, 14, 14))
-            img.put("#1f883d", to=(1, 1, 13, 13))
+            outer, inner = ("#8c959f", "#a8b1ba") if dim else ("#1a7f37", "#1f883d")
         else:
-            img.put("#d0d7de", to=(0, 0, 14, 14))
-            img.put("#ffffff", to=(1, 1, 13, 13))
+            outer, inner = ("#e4e8ec", "#ffffff") if dim else ("#d0d7de", "#ffffff")
+        img.put(outer, to=(0, 0, 14, 14))
+        img.put(inner, to=(1, 1, 13, 13))
         return img
 
     def _square_check(self, parent, text: str, variable: tk.BooleanVar, command=None) -> tk.Checkbutton:
         """白底、方块指示器，勾选时为填色方。"""
+        def _paint():
+            """按「是否勾选」+「是否禁用」选贴图；不用 selectimage，
+            否则 Tk 会自动换成绿版，盖掉禁用态的灰版。"""
+            try:
+                if getattr(widget, "_dim", False):
+                    img = self._chk_on_dim if variable.get() else self._chk_off_dim
+                else:
+                    img = self._chk_on if variable.get() else self._chk_off
+                widget.configure(image=img)
+            except tk.TclError:
+                pass  # 控件已销毁（退出过程中变量仍在变）
+
         def _sync():
-            img = self._chk_on if variable.get() else self._chk_off
-            widget.configure(image=img)
+            _paint()
             if command:
                 command()
 
@@ -526,8 +546,7 @@ class App(tk.Tk):
             text=text,
             variable=variable,
             command=_sync,
-            image=self._chk_on if variable.get() else self._chk_off,
-            selectimage=self._chk_on,
+            # 不用 selectimage：它会覆盖禁用态的灰版贴图
             indicatoron=False,  # 关掉系统默认 ✕/对勾
             compound="left",
             padx=6,
@@ -538,10 +557,24 @@ class App(tk.Tk):
             activebackground="#ffffff",
             fg="#1f2328",
             activeforeground="#1f2328",
+            # 禁用时文字变灰：tk.Checkbutton 不支持 style.map，
+            # 不设 disabledforeground 的话锁住了却看不出来
+            disabledforeground="#8c959f",
             anchor="w",
             font=("Segoe UI", 10),
         )
+        widget._dim = False
+        widget._paint = _paint
+        _paint()
+        # 变量被程序改动时（如切换组合 _apply_profile）也要重画指示器
+        variable.trace_add("write", lambda *_: _paint())
         return widget
+
+    def _set_check_state(self, widget: tk.Checkbutton, enabled: bool) -> None:
+        """禁用/启用自绘方块勾选：除 state 外还要换灰版方块贴图。"""
+        widget.configure(state="normal" if enabled else "disabled")
+        widget._dim = not enabled
+        widget._paint()
 
     def _resolve_token(self, raw: str) -> str:
         """解析 Token 输入框内容。
@@ -609,23 +642,34 @@ class App(tk.Tk):
             style="Muted.TLabel",
         ).grid(row=1, column=1, columnspan=2, sticky="w", pady=(8, 0))
 
+        # 导出期间需要一并锁定的「导出参数」控件（避免改动被工作线程的旧快照吞掉）
+        self.param_widgets: list = []
+
         # 仓库
         r = field_row(2, "仓库")
         self.repo_var = tk.StringVar(value="owner/repo")
-        ttk.Entry(r, textvariable=self.repo_var).grid(row=0, column=1, sticky="ew")
+        w = ttk.Entry(r, textvariable=self.repo_var)
+        w.grid(row=0, column=1, sticky="ew")
+        self.param_widgets.append(w)
 
         # 输出目录
         r = field_row(3, "输出目录")
         self.out_var = tk.StringVar(value="")
-        ttk.Entry(r, textvariable=self.out_var).grid(row=0, column=1, sticky="ew", padx=(0, 10))
-        ttk.Button(r, text="浏览…", command=self._pick_out).grid(row=0, column=2, sticky="e")
+        w = ttk.Entry(r, textvariable=self.out_var)
+        w.grid(row=0, column=1, sticky="ew", padx=(0, 10))
+        self.param_widgets.append(w)
+        w = ttk.Button(r, text="浏览…", command=self._pick_out)
+        w.grid(row=0, column=2, sticky="e")
+        self.param_widgets.append(w)
 
         # Token（明文输入；组合切换时自动带出，掩码显示由「显示明文」控制）
         r = field_row(4, "Token")
         self.token_var = tk.StringVar(value="")
         self.token_entry = ttk.Entry(r, textvariable=self.token_var)
         self.token_entry.grid(row=0, column=1, sticky="ew", padx=(0, 10))
-        ttk.Button(r, text="清除缓存", command=self._clear_token_cache).grid(row=0, column=2, sticky="e")
+        self.param_widgets.append(self.token_entry)
+        self.clear_btn = ttk.Button(r, text="清除缓存", command=self._clear_token_cache)
+        self.clear_btn.grid(row=0, column=2, sticky="e")
 
         # Token 附属选项
         tok_sub = ttk.Frame(outer)
@@ -633,10 +677,14 @@ class App(tk.Tk):
         ttk.Label(tok_sub, text="", width=12).grid(row=0, column=0)
         self.show_token = tk.BooleanVar(value=False)
         self.remember_var = tk.BooleanVar(value=True)
-        self._square_check(
+        w = self._square_check(
             tok_sub, "显示明文", self.show_token, command=self._toggle_token_visibility
-        ).grid(row=0, column=1, sticky="w", padx=(0, 20))
-        self._square_check(tok_sub, "记住到本机缓存", self.remember_var).grid(row=0, column=2, sticky="w")
+        )
+        w.grid(row=0, column=1, sticky="w", padx=(0, 20))
+        self.param_widgets.append(w)
+        w = self._square_check(tok_sub, "记住到本机缓存", self.remember_var)
+        w.grid(row=0, column=2, sticky="w")
+        self.param_widgets.append(w)
 
         # 分隔
         ttk.Separator(outer, orient="horizontal").grid(row=6, column=0, sticky="ew", pady=(4, 18))
@@ -653,9 +701,9 @@ class App(tk.Tk):
 
         def spin(parent, label, var, col, to=10000):
             ttk.Label(parent, text=label).grid(row=0, column=col, sticky="e", padx=(0, 6))
-            ttk.Spinbox(parent, from_=1, to=to, textvariable=var, width=7).grid(
-                row=0, column=col + 1, sticky="w", padx=(0, 24)
-            )
+            w = ttk.Spinbox(parent, from_=1, to=to, textvariable=var, width=7)
+            w.grid(row=0, column=col + 1, sticky="w", padx=(0, 24))
+            self.param_widgets.append(w)
 
         spin(limits, "PR", self.max_prs, 0)
         spin(limits, "Issue", self.max_issues, 2)
@@ -677,10 +725,18 @@ class App(tk.Tk):
         ttk.Label(opts, text="选项", width=12, anchor="e").grid(row=0, column=0, sticky="e", padx=(0, 12))
         box = ttk.Frame(opts)
         box.grid(row=0, column=1, sticky="w")
-        self._square_check(box, "跳过 diff / 评论", self.skip_details).grid(row=0, column=0, sticky="w", padx=(0, 22))
-        self._square_check(box, "缓存源码", self.include_contents).grid(row=0, column=1, sticky="w", padx=(0, 22))
-        self._square_check(box, "覆盖输出目录", self.force_var).grid(row=0, column=2, sticky="w", padx=(0, 22))
-        self._square_check(box, "增量导出", self.incremental_var).grid(row=0, column=3, sticky="w")
+        w = self._square_check(box, "跳过 diff / 评论", self.skip_details)
+        w.grid(row=0, column=0, sticky="w", padx=(0, 22))
+        self.param_widgets.append(w)
+        w = self._square_check(box, "缓存源码", self.include_contents)
+        w.grid(row=0, column=1, sticky="w", padx=(0, 22))
+        self.param_widgets.append(w)
+        w = self._square_check(box, "覆盖输出目录", self.force_var)
+        w.grid(row=0, column=2, sticky="w", padx=(0, 22))
+        self.param_widgets.append(w)
+        w = self._square_check(box, "增量导出", self.incremental_var)
+        w.grid(row=0, column=3, sticky="w")
+        self.param_widgets.append(w)
 
         # 操作（始终可见）
         actions = ttk.Frame(outer)
@@ -1048,10 +1104,38 @@ class App(tk.Tk):
         return a
 
     def _set_profile_btns_state(self, enabled: bool) -> None:
-        """导出期间禁用组合按钮，避免中途保存被工作线程的旧快照覆盖。"""
+        """导出期间锁定组合区与全部导出参数控件。
+
+        工作线程在启动时拍下快照、结束后把快照写回磁盘，因此导出中任何被改动的
+        控件，其改动都会在写回时被静默吞掉（界面显示新值、缓存里仍是旧值）。
+        这里统一锁住：组合下拉、四个组合按钮、「清除缓存」，以及所有导出参数字段。
+        """
+        state = "normal" if enabled else "disabled"
         for b in getattr(self, "profile_btns", []):
             try:
-                b.configure(state="normal" if enabled else "disabled")
+                b.configure(state=state)
+            except Exception:
+                pass
+        # 下拉在导出期间保持只读但不可展开
+        try:
+            self.profile_combo.configure(state="readonly" if enabled else "disabled")
+        except Exception:
+            pass
+        # 「清除缓存」会删掉缓存文件，导出中同样要锁住
+        try:
+            self.clear_btn.configure(state=state)
+        except Exception:
+            pass
+        # 仓库 / 输出目录 / 浏览… / Token / 显示明文 / 记住到本机缓存
+        # / 四个数量上限 / 四个选项开关
+        # 自绘方块勾选（tk.Checkbutton）没有 style.map，需要额外换灰版贴图，
+        # 否则文字和方块都不变，锁住了却看着像还能点。
+        for w in getattr(self, "param_widgets", []):
+            try:
+                if getattr(w, "_paint", None) is not None:
+                    self._set_check_state(w, enabled)
+                else:
+                    w.configure(state=state)
             except Exception:
                 pass
 
