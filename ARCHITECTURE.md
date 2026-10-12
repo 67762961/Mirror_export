@@ -56,7 +56,7 @@ Mirror_export/
 ├── assets/                        图标与 README 配图
 ├── dist/
 │   ├── Mirror_export.exe          打包后的 GUI 导出工具
-│   └── gh_token_cache.json        本机 Token/路径缓存（不进导出包）
+│   └── gh_token_cache.json        本机组合缓存：仓库+输出目录+Token+选项（不进导出包）
 └── _inspect_readme.py             辅助检查脚本
 ```
 
@@ -169,7 +169,19 @@ python export.py --repo owner/name --full   # 强制全量
 - 收集 Token / 仓库 / 输出目录 / 数量上限 / 增量与跳过详情等选项；
 - 后台线程调用 `export_mod.export(args)`；
 - 用 `queue` + `after` 轮询消费日志与 `__PROGRESS__`；
-- 可选把 Token、仓库、输出路径写入 exe 同目录 `gh_token_cache.json`（最多 8 条，UI 侧掩码显示）。
+- 参数以**组合（profile）**为单位持久化到 exe 同目录 `gh_token_cache.json`：一个组合 = 仓库 + 输出目录 + Token + 数量上限 + 各选项开关；UI 下拉整体切换（`_apply_profile` 组合→控件），点「保存」/导出成功后写回（`_capture_profile` 控件→组合）。Token 为单行输入框，默认掩码显示，「显示明文」切换明文；真值存于 `_token_plain`，`_resolve_token` 负责把掩码还原成真值。
+  - 缓存结构 v2：`{"version":2, "profiles":[{name, repo, out, token, max_*, skip_details, include_contents, force, incremental, last_used}], "active": "<组合名>"}`，最多 20 个组合。
+  - `load_cache()` 兼容 v1（`{"tokens":[...], "last_repo", "last_out"}`），检测到旧结构时调用 `_migrate_v1` 转成组合并立即写回，旧数据不删除。
+  - 组合的增删改查为 `list_profiles` / `get_profile` / `upsert_profile` / `delete_profile` / `rename_profile` / `active_profile`。
+  - `_migrate_v1` 的要点：用**已生成条数**（`first = not profiles`）而非原始下标判断「首条」，因为 `tokens` 前几项可能因非 dict / 空 token 被 `continue` 跳过；v1 若已含 `max_*` / `skip_details` / `include_contents` / `force` 等字段则一并继承，不退回默认值；重名用 `名称 (2)`、`名称 (3)` 递增去重。
+  - `active_profile()` 在 `active` 失效时按 `last_used` 回落到最近使用的一条；`delete_profile` 删掉当前 active 时把 `active` 置空，正是交给这条回落逻辑。
+  - 控件 ↔ 组合的字段搬运只在两处：`_apply_profile`（组合→控件）与 `_capture_profile`（控件→组合），避免字段逻辑散落。`_collect_args()` 仍直接从控件取值，因此**导出核心零影响**。
+  - Token 为单行 `ttk.Entry`（不是下拉框）：真值存于 `_token_plain`，输入框按「显示明文」显示明文或 `mask_token()` 结果；`_resolve_token` 在「输入框内容 == mask_token(_token_plain)」时返回真值（用户没动过），否则以输入框内容为准（用户改了）。`_profile_for_save` 在解析结果为空时保留该组合已存的 Token，避免掩码状态下误清空。
+  - `_set_token_field()` 是写 Token 控件的唯一入口（切组合、取环境变量兜底都走它）。
+  - 导出期间 `_set_profile_btns_state(False)` 会锁定**组合区与全部导出参数控件**：组合下拉、四个组合按钮、「清除缓存」，以及 `self.param_widgets` 里登记的仓库 / 输出目录 / 浏览… / Token / 显示明文 / 记住到本机缓存 / 四个数量上限 / 四个选项开关。`_poll` 在 `__DONE__` / `__FAIL__` 两个分支都恢复可用。
+    - 原因：工作线程在启动时拍下快照、结束后把快照写回磁盘，导出中任何被改动的控件都会在写回时被**静默吞掉**（界面显示新值、缓存里仍是旧值），所以必须锁住全部参数控件，而不只是按钮。
+    - 注意：`ttk.Button` / `tk.Checkbutton` 的 `state="disabled"` 只改行为，**外观取决于 style.map**。`TButton` 必须显式给 `disabled` 映射 `background` / `foreground` / `bordercolor`，否则按钮被禁用了却和可点状态长得一样（本项目曾因此让用户以为「导出中按钮还能用」）。新增控件若要参与导出锁定，记得 `self.param_widgets.append(w)`。
+  - `save_cache()` 用「临时文件 + `os.replace`」原子写出；`load_cache()` 遇 JSON 损坏时把原文件改名为 `<名>.json.bad` 备份后再从空缓存开始，避免后续写回直接覆盖掉可恢复的内容。
 
 注意：Token 缓存只在外网导出机本地，**不会**写入导出包。
 
@@ -266,8 +278,13 @@ window.GH_DATA=window.GH_DATA||{};window.GH_DATA.<name>=<compact-json>;
 2. 修改精简字段（`map_*`）时，检查查看器是否依赖被删字段；旧增量缓存可能仍含旧结构，读侧要兼容或提供一次性迁移。
 3. 查看器必须继续兼容 `file://`：禁止依赖 `fetch` 拉本地 JSON，必须使用 `data/*.js` 脚本注入。
 4. 新增 CLI 参数时：在 `export.main()` 注册、在 GUI `_collect_args` 映射（若 GUI 需要）、在 README/ARCHITECTURE 同步。
-5. 改 Token 缓存格式时，保持 `gh_token_cache.json` 可读、可清除，且永不进入导出输出目录。
+5. 改 Token 缓存格式时，保持 `gh_token_cache.json` 可读、可清除，且永不进入导出输出目录；新增字段须给默认值，并保证旧版（v1 按 Token 平铺）能被 `_migrate_v1` 迁移，不得丢弃用户已存的 Token。
 6. 回归验证建议：
    - 无网打开 `preview/index.html` 检查查看器；
    - 对同一输出目录连续跑两次增量导出，确认缓存命中日志；
-   - `--skip-details` 与全量各跑一遍小仓库，确认 `data/*.js` 仍能被 `parse_data_js` 解析。
+   - `--skip-details` 与全量各跑一遍小仓库，确认 `data/*.js` 仍能被 `parse_data_js` 解析；
+   - 组合（profile）相关：
+     - 用一份 v1 旧缓存启动，确认自动迁移为 profiles，且**每条 Token 自己的 repo 不被 last_repo 覆盖**；
+     - 建 A、B 两个组合来回切换，确认仓库/输出目录/Token/上限/开关整体跟着换、互不串；
+     - 导出期间组合按钮应为禁用态（防止中途保存被工作线程的旧快照覆盖）；
+     - 删除当前组合后，界面加载的组合应与重启后加载的一致（都走 `active_profile()` 的最近使用回落）。
