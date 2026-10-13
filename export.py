@@ -53,15 +53,118 @@ def log(msg: str) -> None:
     print(msg, flush=True)
 
 
+# --- 阶段表：顺序即执行顺序，权重只影响进度条平滑度，不影响导出行为 ---
+# 新增阶段时必须在此登记，否则进度条会缺失该段（见 AGENTS.md）。
+STAGES = [
+    ("仓库信息", 1),
+    ("Tags/Releases", 2),
+    ("Release 对比", 3),
+    ("Commits", 4),
+    ("Commit diff", 12),
+    ("Pull Requests", 10),
+    ("PR 详情", 18),
+    ("Issues", 6),
+    ("Issue 关联", 2),
+    ("文件树", 3),
+    ("文件内容", 20),
+    ("仓库图片", 12),
+    ("正文图片", 5),
+    ("Branches", 1),
+    ("写出数据", 1),
+]
+
+_STAGE_ORDER = [name for name, _ in STAGES]
+_STAGE_WEIGHT = dict(STAGES)
+_STAGE_INDEX = {name: i for i, name in enumerate(_STAGE_ORDER, 1)}
+# 全局进度按「本轮实际会执行的阶段」折算：跳过某阶段（--no-assets / --skip-details）时，
+# 其权重在分子与分母中一并剔除，保证最终仍能到 100%，且不会因分母变动而忽高忽低。
+_STAGE_DECLARED = {"max_idx": 0}
+# 本轮实际出现过的阶段名，用于判断哪些阶段被跳过
+_SEEN_STAGES: set = set()
+# 单调保护：全局百分比只增不减，阶段切换时不会倒退
+_LAST_OVERALL = {"value": 0}
+
+
+def _mark_stage(stage: str) -> None:
+    """记录阶段已执行：用于判断跳过项，并维护实际执行到的最大下标。"""
+    if stage in _STAGE_WEIGHT:
+        _SEEN_STAGES.add(stage)
+    idx = _STAGE_INDEX.get(stage, 0)
+    if idx > _STAGE_DECLARED["max_idx"]:
+        _STAGE_DECLARED["max_idx"] = idx
+
+
 def progress(stage: str, done: int, total: int, note: str = "") -> None:
-    """人类可读进度 + 供 GUI 解析的机器行。"""
+    """人类可读进度 + 供 GUI 解析的机器行。
+
+    ``overall`` 为全局加权百分比（0-100），由本函数统一算好，GUI 直接使用，
+    保证整个导出过程单调递增、阶段切换不倒退。
+    """
+    _mark_stage(stage)
     total = max(0, int(total or 0))
     done = max(0, int(done or 0))
+    done = min(done, total) if total else done
     pct = int(done * 100 / total) if total else 0
+
+    # 全局进度：把「实际会执行的阶段」重新编号，权重按比例缩放后再累加。
+    # 关键点：分子与分母必须用同一套权重口径 —— 跳过阶段的权重既要从分母扣除，
+    # 也不能再出现在 before 里，否则后面阶段的百分比会被挤到 100% 附近。
+    max_idx = _STAGE_DECLARED["max_idx"]
+    idx = _STAGE_INDEX.get(stage, 0)
+    # 视为跳过的阶段：出现在当前阶段之前、但本轮从未出现过的阶段
+    skipped_names = {
+        n for i, n in enumerate(_STAGE_ORDER, 1)
+        if i < max_idx and n not in _SEEN_STAGES
+    }
+    live_weight = {n: w for n, w in _STAGE_WEIGHT.items() if n not in skipped_names}
+    denom = max(1, sum(live_weight.values()))
+    before = sum(live_weight[n] for n in _STAGE_ORDER[: idx - 1] if n in live_weight) if idx else 0
+    stage_w = live_weight.get(stage, 0)
+    raw = int((before + stage_w * (done / total if total else 0)) * 100 / denom)
+    # 单调保护：分母变化或阶段切换都可能让 raw 回落，这里取历史最大值
+    overall = max(_LAST_OVERALL["value"], max(0, min(100, raw)))
+    _LAST_OVERALL["value"] = overall
+
     bar = f"[{done}/{total} {pct:3d}%]"
     suffix = f" · {note}" if note else ""
     log(f"  {stage} {bar}{suffix}")
-    print(f"__PROGRESS__{{\"stage\":\"{stage}\",\"done\":{done},\"total\":{total}}}", flush=True)
+    # 显示用序号：跳过阶段不占编号，避免出现 [7/15] 却只有 14 个阶段在跑
+    live_order = [n for n in _STAGE_ORDER if n in live_weight]
+    shown_idx = (live_order.index(stage) + 1) if stage in live_weight else idx
+    payload = {
+        "stage": stage,
+        "done": done,
+        "total": total,
+        "note": note,
+        "stage_idx": shown_idx,
+        "stage_n": len(live_weight),
+        "overall": overall,
+    }
+    print("__PROGRESS__" + json.dumps(payload, ensure_ascii=False), flush=True)
+
+
+def stage_begin(stage: str, total: int = 0) -> None:
+    """标记阶段开始（total=0 表示总数暂未知），让进度条至少显示当前阶段名。"""
+    progress(stage, 0, total)
+
+
+def make_throttle(step_pct: int = 1):
+    """返回「每跨过 step_pct% 才发一次」的节流判定函数，用于高频循环。
+
+    节流状态放在闭包里，progress() 保持无状态，便于测试。
+    """
+
+    def should(stage: str, done: int, total: int) -> bool:
+        if done <= 0 or done >= total:
+            return True
+        pct = int(done * 100 / total) if total else 0
+        if pct != should.last_pct:
+            should.last_pct = pct
+            return True
+        return False
+
+    should.last_pct = -1
+    return should
 
 
 def short_sha(sha: str | None) -> str:
@@ -340,25 +443,35 @@ def download_repo_images(
     out: Path,
     max_bytes: int = 2_000_000,
     prev_index: dict | None = None,
+    stage: str = "",
 ) -> tuple[int, int]:
-    """把仓库里的图片落到 out/assets。返回 (新下载, 跳过复用)。"""
+    """把仓库里的图片落到 out/assets。返回 (新下载, 跳过复用)。
+
+    ``stage`` 非空时按该阶段名上报进度；total 为筛选后的图片总数，
+    命中复用的也计入 done，保证纯增量全命中时进度条照常走完。
+    """
     assets_dir = out / "assets"
     assets_dir.mkdir(exist_ok=True)
     index = dict(prev_index or {})
     n_new = 0
     n_skip = 0
+    # 先筛出候选，拿到分母
+    candidates = []
     for t in tree:
         path = t.get("path") or ""
-        typ = t.get("type")
-        size = t.get("size") or 0
-        sha = t.get("sha") or ""
-        if typ != "blob":
+        if t.get("type") != "blob":
             continue
-        ext = Path(path).suffix.lower()
-        if ext not in IMAGE_EXT or size > max_bytes:
+        if Path(path).suffix.lower() not in IMAGE_EXT or (t.get("size") or 0) > max_bytes:
             continue
         if any(path.startswith(p) for p in SKIP_DIR_PREFIX):
             continue
+        candidates.append(t)
+    if stage:
+        stage_begin(stage, len(candidates))
+    throttle = make_throttle(1)
+    for i, t in enumerate(candidates, 1):
+        path = t.get("path") or ""
+        sha = t.get("sha") or ""
         rel = asset_rel(path)
         dst = assets_dir / rel
         if (
@@ -367,6 +480,8 @@ def download_repo_images(
             and dst.stat().st_size > 0
         ):
             n_skip += 1
+            if stage and throttle(stage, i, len(candidates)):
+                progress(stage, i, len(candidates), path)
             continue
         try:
             raw, _ = http_get(t["url"], token, accept="application/vnd.github.raw")
@@ -375,10 +490,14 @@ def download_repo_images(
             dst.write_bytes(data)
             index[path] = sha
             n_new += 1
-            if n_new % 20 == 0:
+            if stage and throttle(stage, i, len(candidates)):
+                progress(stage, i, len(candidates), path)
+            elif not stage and n_new % 20 == 0:
                 log(f"  图片资源: {n_new}")
         except Exception as e:
             log(f"  [warn] 图片 {path} 失败: {e}")
+            if stage and throttle(stage, i, len(candidates)):
+                progress(stage, i, len(candidates), path)
     save_asset_index(out, index)
     log(f"  图片资源: 新下 {n_new}, 复用 {n_skip}")
     return n_new, n_skip
@@ -812,6 +931,7 @@ def download_body_images(
     reuse: bool = True,
     max_bytes: int = BODY_IMAGE_MAX_BYTES,
     aliases: dict | None = None,
+    stage: str = "",
 ) -> tuple[dict, int, int, int]:
     """下载 PR/Issue/Release 正文中的外链图片。
 
@@ -831,12 +951,18 @@ def download_body_images(
     n_skip = 0
     n_fail = 0
 
-    for url in urls:
-        if not url or url.startswith("data:"):
-            continue
-        # 相对路径交给查看器按 assets/<path> 处理；此处只管绝对 URL
-        if not re.match(r"^https?://", url, re.I):
-            continue
+    # 进度分母：可下载的绝对 URL（跳过 data: 与相对路径）
+    targets = [
+        u for u in urls
+        if u and not u.startswith("data:") and re.match(r"^https?://", u, re.I)
+    ]
+    if stage:
+        stage_begin(stage, len(targets))
+    throttle = make_throttle(1)
+    for i, url in enumerate(targets, 1):
+        # 进度放在循环前部，命中复用 / 失败的也计入，避免停在 99% 不动
+        if stage and throttle(stage, i, len(targets)):
+            progress(stage, i, len(targets), url[:80])
         # 仓库树内已有 → 直接映射，不重复下载
         local = resolve_repo_image_url(url, repo, tree_image_paths)
         if local:
@@ -865,7 +991,7 @@ def download_body_images(
             index[key] = rel
             image_map[url] = rel
             n_new += 1
-            if n_new % 20 == 0:
+            if not stage and n_new % 20 == 0:
                 log(f"  正文图片: {n_new}")
         except Exception as e:
             n_fail += 1
@@ -949,6 +1075,7 @@ def export(args) -> Path:
     log(f"输出目录: {out.resolve()}")
 
     # --- repo meta ---
+    stage_begin("仓库信息")
     repo_info, _ = http_get(f"{API}/repos/{repo}", token)
     default_branch = repo_info.get("default_branch") or "main"
     meta = {
@@ -979,6 +1106,7 @@ def export(args) -> Path:
     }
 
     # --- tags & releases ---
+    stage_begin("Tags/Releases", 2)
     log("拉取 tags ...")
     raw_tags = paginate(f"{API}/repos/{repo}/tags", token, args.max_tags, "tags")
     tags = [
@@ -990,6 +1118,7 @@ def export(args) -> Path:
         for t in raw_tags
     ]
     log(f"  tags: {len(tags)}")
+    progress("Tags/Releases", 1, 2, f"tags {len(tags)}")
 
     log("拉取 releases ...")
     raw_releases = paginate(f"{API}/repos/{repo}/releases", token, args.max_tags, "releases")
@@ -1009,8 +1138,10 @@ def export(args) -> Path:
         for r in raw_releases
     ]
     log(f"  releases: {len(releases)}")
+    progress("Tags/Releases", 2, 2, f"releases {len(releases)}")
 
     # --- release compare: commits / files / 关联 PR（增量：已有则复用） ---
+    stage_begin("Release 对比", len(releases))
     log("为每个 Release 拉取对比 ...")
     prev_releases = {
         r.get("tag_name"): r for r in (prev.get("releases") or []) if r.get("tag_name")
@@ -1028,6 +1159,7 @@ def export(args) -> Path:
         ):
             rel["compare"] = old["compare"]
             rel["related_prs"] = old.get("related_prs") or []
+            progress("Release 对比", i + 1, len(releases), f"{tag}（缓存）")
             continue
         base = tag_names[i + 1] if i + 1 < len(tag_names) else None
         compare = {"base": base, "head": tag, "commits": [], "files": [], "total_commits": 0, "truncated": False}
@@ -1061,10 +1193,12 @@ def export(args) -> Path:
         nums = sorted({int(x) for x in re.findall(r"#(\d+)", body)})
         rel["related_pr_nums"] = nums
         log(f"  release {tag}: base={base}, commits={compare.get('total_commits', 0)}")
+        progress("Release 对比", i + 1, len(releases), f"{tag}")
 
     log(f"  releases 对比完成")
 
     # --- commits：无限累积缓存；每轮从 HEAD 往回爬 max_commits，与本地合并，不丢历史 ---
+    stage_begin("Commits")
     log(f"拉取 commits ({default_branch}) 本轮窗口 {args.max_commits} ...")
     raw_commits = paginate(
         f"{API}/repos/{repo}/commits?sha={urllib.parse.quote(default_branch)}",
@@ -1148,8 +1282,6 @@ def export(args) -> Path:
                 stats = raw.get("stats") or {}
                 n_c_fetch += 1
                 fetched = True
-                msg0 = ((c.get("commit") or {}).get("message") or "").split("\n")[0]
-                progress("Commit diff", n_c_fetch, need_diff_n, f"{short_sha(sha)} {msg0[:48]}")
             except Exception as e:
                 log(f"  [warn] commit {short_sha(sha)} files 失败: {e}")
                 n_c_nodiff += 1
@@ -1173,7 +1305,12 @@ def export(args) -> Path:
         return entry
 
     # 1) 处理本轮 API 窗口（新→旧）
+    # 进度以「本轮 API 窗口」为分母、已处理条数为分子；命中和无需 diff 的同样计入，
+    # 这样纯增量全命中缓存时进度条也会走完，而不是纹丝不动。
+    stage_begin("Commit diff", len(raw_commits))
+    t_commit = make_throttle(1)
     seen2 = set()
+    n_commit_seen = 0
     for c in raw_commits:
         sha = c.get("sha")
         if not sha or sha in seen2:
@@ -1181,6 +1318,13 @@ def export(args) -> Path:
         seen2.add(sha)
         old = prev_commits.get(sha) if incremental else None
         commits.append(build_entry(c, old))
+        n_commit_seen += 1
+        if t_commit("Commit diff", n_commit_seen, len(raw_commits)):
+            msg0 = ((c.get("commit") or {}).get("message") or "").split("\n")[0]
+            progress("Commit diff", n_commit_seen, len(raw_commits), f"{short_sha(sha)} {msg0[:48]}")
+    # 极端情况：窗口为空但本轮确实执行了该阶段，补一条 100% 让进度条到位
+    if not raw_commits:
+        progress("Commit diff", 0, 0, "无新 commit")
 
     # 2) 合并历史缓存：不在本轮窗口里的一律保留（无限累积）
     if incremental and prev_commits:
@@ -1198,6 +1342,7 @@ def export(args) -> Path:
     )
 
     # --- pull requests（增量：updated_at 未变则复用详情） ---
+    stage_begin("Pull Requests")
     log("拉取 pull requests ...")
     # 按编号（创建顺序）从新到旧拉取，保证数量上限时优先保留高编号
     raw_prs = paginate(f"{API}/repos/{repo}/pulls?state=all&sort=created&direction=desc", token, args.max_prs, "prs")
@@ -1205,9 +1350,14 @@ def export(args) -> Path:
     prs = []
     n_pr_reuse = 0
     n_pr_fetch = 0
+    stage_begin("PR 详情", len(raw_prs))
+    t_pr = make_throttle(1)
     for i, pr in enumerate(raw_prs, 1):
         num = pr.get("number")
         old = prev_prs.get(num)
+        # 进度放在循环最前：命中缓存走 continue 的也会计入，纯增量全命中时进度条照常走完
+        if t_pr("PR 详情", i, len(raw_prs)):
+            progress("PR 详情", i, len(raw_prs), f"#{num} {str(pr.get('title') or '')[:40]}")
         if (
             incremental
             and not args.skip_details
@@ -1246,7 +1396,6 @@ def export(args) -> Path:
                 except Exception as e:
                     log(f"  [warn] PR#{num} comments 失败: {e}")
             n_pr_fetch += 1
-            progress("PR 详情", i, len(raw_prs), f"#{num} {str(pr.get('title') or '')[:40]}")
         entry = map_pr(pr, files, comments)
         entry["merged"] = bool(pr.get("merged_at"))
         entry["commits_list"] = pr_commits
@@ -1270,6 +1419,7 @@ def export(args) -> Path:
         ]
 
     # --- issues（增量） ---
+    stage_begin("Issues")
     log("拉取 issues ...")
     # 按编号（创建顺序）从新到旧拉取；仍过滤 pull_request
     raw_issues_all = paginate(f"{API}/repos/{repo}/issues?state=all&sort=created&direction=desc", token, args.max_issues * 2, "issues")
@@ -1277,10 +1427,15 @@ def export(args) -> Path:
     issues = []
     n_i_reuse = 0
     n_i_fetch = 0
-    for item in raw_issues_all:
+    progress("Issues", 0, len(raw_issues_all), "开始")
+    t_issue = make_throttle(1)
+    for i, item in enumerate(raw_issues_all, 1):
         if item.get("pull_request"):
             continue
         num = item.get("number")
+        # 同样放在循环前部：命中缓存的 issue 也要计入进度
+        if t_issue("Issues", i, len(raw_issues_all)):
+            progress("Issues", i, len(raw_issues_all), f"#{num} {str(item.get('title') or '')[:40]}")
         old = prev_issues.get(num)
         if (
             incremental
@@ -1357,6 +1512,7 @@ def export(args) -> Path:
         need_timeline = need_timeline[:20]
         if need_timeline:
             log(f"  timeline 待查 {len(need_timeline)} 条（仅缺失项）")
+        stage_begin("Issue 关联", len(need_timeline))
         for idx, iss in enumerate(need_timeline, 1):
             n = iss.get("number")
             try:
@@ -1382,8 +1538,7 @@ def export(args) -> Path:
                         break
             except Exception as e:
                 log(f"  [warn] issue#{n} timeline 失败: {e}")
-            if idx % 10 == 0:
-                log(f"  timeline: {idx}/{len(need_timeline)}")
+            progress("Issue 关联", idx, len(need_timeline), f"issue#{n}")
 
     for iss in issues:
         n = iss.get("number")
@@ -1394,6 +1549,7 @@ def export(args) -> Path:
     log(f"  closed_by 命中 {sum(1 for i in issues if i.get('closed_by_pr'))} 条")
 
     # --- file tree + text contents（按 blob sha 增量） ---
+    stage_begin("文件树")
     log(f"拉取文件树 ({default_branch}) ...")
     tree_url = f"{API}/repos/{repo}/git/trees/{urllib.parse.quote(default_branch)}?recursive=1"
     tree_resp, _ = http_get(tree_url, token)
@@ -1407,16 +1563,38 @@ def export(args) -> Path:
         if t.get("path") and t.get("sha"):
             prev_tree_sha[t["path"]] = t["sha"]
 
+    # 先按增量规则把树过一遍，算出「需要新下载的文本数」作为进度分母，
+    # 否则分母只能边跑边长，百分比会乱跳。
+    tree_kept = [
+        t for t in tree_items
+        if not any(
+            (t.get("path") or "").startswith(p) or f"/{p}" in f"/{t.get('path') or ''}"
+            for p in SKIP_DIR_PREFIX
+        )
+    ]
+    text_targets = []
+    for t in tree_kept:
+        if t.get("type") != "blob":
+            continue
+        path = t.get("path") or ""
+        size = t.get("size") or 0
+        if not (args.include_contents and is_textish(path) and size <= args.max_file_bytes):
+            continue
+        if incremental and path in prev_contents and prev_tree_sha.get(path) == t.get("sha"):
+            continue  # 命中缓存，不计入本阶段分母
+        text_targets.append(t)
+    progress("文件树", len(tree_kept), len(tree_kept), f"{len(text_targets)} 个文本待下载")
+
     files_meta = []
     contents = {}
     text_count = 0
     text_reuse = 0
     skipped = 0
-    for t in tree_items:
+    stage_begin("文件内容", len(text_targets))
+    t_text = make_throttle(1)
+    for t in tree_kept:
         path = t.get("path") or ""
         typ = t.get("type")
-        if any(path.startswith(p) or f"/{p}" in f"/{path}" for p in SKIP_DIR_PREFIX):
-            continue
         if typ == "tree":
             files_meta.append({"path": path, "type": "tree", "size": 0})
             continue
@@ -1448,8 +1626,8 @@ def export(args) -> Path:
                     text = str(raw)
                 contents[path] = text
                 text_count += 1
-                if text_count % 50 == 0:
-                    log(f"  文件内容: {text_count}")
+                if t_text("文件内容", text_count, len(text_targets)):
+                    progress("文件内容", text_count, len(text_targets), path)
             except Exception as e:
                 skipped += 1
                 log(f"  [warn] 读取 {path} 失败: {e}")
@@ -1478,7 +1656,9 @@ def export(args) -> Path:
     if not args.no_assets:
         log("下载图片资源 ...")
         img_new, img_skip = download_repo_images(
-            repo, token, tree_items, out, prev_index=prev_asset_index if incremental else None
+            repo, token, tree_items, out,
+            prev_index=prev_asset_index if incremental else None,
+            stage="仓库图片",
         )
         meta["file_stats"]["images"] = img_new
         meta["file_stats"]["images_reused"] = img_skip
@@ -1486,6 +1666,7 @@ def export(args) -> Path:
         body_urls = collect_body_image_urls(prs, issues, releases)
         if body_urls:
             log(f"下载正文图片 ({len(body_urls)} 个 URL) ...")
+            stage_begin("正文图片")
             # 私有库 user-attachments 直链 404：先 GraphQL bodyHTML 解析成可下载 CDN URL
             aliases = resolve_attachment_aliases(repo, prs, issues, releases, token)
             image_map, b_new, b_skip, b_fail = download_body_images(
@@ -1496,6 +1677,7 @@ def export(args) -> Path:
                 tree_image_paths,
                 reuse=incremental,
                 aliases=aliases,
+                stage="正文图片",
             )
             meta["image_map"] = image_map
             meta["file_stats"]["body_images"] = b_new
@@ -1514,6 +1696,7 @@ def export(args) -> Path:
         meta["image_map"] = {}
 
     # --- branches (轻量，用于筛选) ---
+    stage_begin("Branches")
     log("拉取 branches ...")
     try:
         raw_branches = paginate(f"{API}/repos/{repo}/branches", token, 50, "branches")
@@ -1542,10 +1725,12 @@ def export(args) -> Path:
         "files": {"tree": files_meta, "contents": contents, "truncated": truncated},
         "branches": branches,
     }
-    for name, payload in writes.items():
+    stage_begin("写出数据", len(writes))
+    for i, (name, payload) in enumerate(writes.items(), 1):
         p = data_dir / f"{name}.js"
         p.write_text(js_assign(name, payload), encoding="utf-8")
         log(f"  {p.name}  {p.stat().st_size / 1024:.1f} KB")
+        progress("写出数据", i, len(writes), p.name)
 
     # manifest for index.html script order
     (data_dir / "manifest.json").write_text(

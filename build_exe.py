@@ -19,7 +19,13 @@ def main() -> int:
     for name in (f"{EXE_NAME}.exe", "github-mirror-export.exe"):
         old_exe = DIST / name
         if old_exe.exists():
-            old_exe.unlink()
+            try:
+                old_exe.unlink()
+            except PermissionError:
+                print(f"错误: 无法删除 {old_exe}", file=sys.stderr)
+                print("  原因: 该 exe 正在运行，Windows 会锁住正在执行的程序文件。", file=sys.stderr)
+                print("  处理: 请先关闭正在运行的 Mirror_export 窗口，再重新打包。", file=sys.stderr)
+                return 1
 
     DIST.mkdir(exist_ok=True)
 

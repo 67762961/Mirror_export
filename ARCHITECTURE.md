@@ -160,7 +160,37 @@ python export.py --repo owner/name --full   # 强制全量
 - `js_assign` / `parse_data_js`：`data/*.js` 写出与回读（增量合并的基础）；
 - `load_previous_export` / `load_asset_index`：读取上次导出包；
 - `download_repo_images`：按 blob sha 增量下载图片；
-- `progress`：同时输出人类可读日志与 `__PROGRESS__{json}` 供 GUI 解析。
+- `progress` / `stage_begin`：同时输出人类可读日志与 `__PROGRESS__{json}` 供 GUI 解析。
+
+**进度协议（`__PROGRESS__`）**
+
+导出的全部进度由 `export.py` 顶部的 `STAGES` 阶段表驱动。每个阶段有一个权重，
+`progress()` 据此算出**全局加权百分比 `overall`**（0-100），GUI 直接使用该值驱动
+进度条，因此整条进度是连续的，不会再出现「阶段切换时百分比重置 / 倒退」。
+
+机器行字段：
+
+| 字段 | 含义 |
+|------|------|
+| `stage` / `done` / `total` | 阶段名与阶段内计数（旧字段，含义未变） |
+| `note` | 当前条目（文件名 / 图片 URL / PR 标题），GUI 截断显示 |
+| `stage_idx` / `stage_n` | 当前阶段序号 / 本轮实际执行的阶段总数 |
+| `overall` | 全局加权百分比，GUI 用它设置进度条 |
+
+约定：
+
+- **新增阶段必须在 `STAGES` 中登记**，否则该段进度会缺失（同时更新 AGENTS.md 的既有约定）。
+- 为避免「边跑边改分母」导致百分比忽高忽低，分母按**本轮实际会执行的阶段**计算：
+  出现在当前阶段之前、但本轮从未出现过的阶段视为跳过（`--no-assets` / `--skip-details`），
+  其权重在分子与分母中一并剔除，`stage_idx` / `stage_n` 也按剔除后重新编号。
+  `_LAST_OVERALL` 做单调保护，兜底保证百分比只增不减。
+- **命中缓存的条目也要计入 `done`**：PR / Issue / Commit / 图片在增量模式下大量复用缓存，
+  若只在真正发起网络请求时上报，纯增量导出会出现进度条长时间不动。所有循环的上报点
+  都放在 `continue` 之前。
+- 高频循环用 `make_throttle(1)` 做**每 1% 一次**的节流，避免刷爆 stdout 与 Tk 重绘；
+  节流状态放在闭包里，`progress()` 自身保持无状态。
+- 日志的人类可读格式（`  阶段 [done/total pct%] · note`）与 CLI 行为保持不变；
+  GUI 与 exporter 版本错配时，任一方缺新字段都能退回旧逻辑，双向兼容。
 
 ### 4.2 `app_gui.py`（外网图形界面）
 
@@ -168,7 +198,24 @@ python export.py --repo owner/name --full   # 强制全量
 
 - 收集 Token / 仓库 / 输出目录 / 数量上限 / 增量与跳过详情等选项；
 - 后台线程调用 `export_mod.export(args)`；
-- 用 `queue` + `after` 轮询消费日志与 `__PROGRESS__`；
+- 用 `queue` + `after` 轮询消费日志与 `__PROGRESS__`；`_apply_progress` 优先用机器行里的
+  `overall` 设置进度条数值。缺 `overall` 时退回按 `done/total` 计算（兼容旧 exporter）。
+  `__FAIL__` 保留进度条当前位置不清零，便于定位卡在哪一步。
+  - 布局（`actions` 栏，从左到右）：**按钮 / 按钮 / 进度条 / 百分比 / 总任务进度 / 阶段内计数 / 说明文本**。
+    例如 `▓▓▓░░ 47%  10/15  120/540  文件内容 · src/main.py`：
+    - **百分比**列：`overall`；
+    - **总任务进度**列：已完成阶段数 / 本轮总阶段数。正在执行的阶段算「未完成」，
+      故阶段开始时显示 `idx-1/N`、该阶段跑满后显示 `idx/N`；
+    - **阶段内计数**列：当前阶段 `done/total`（文件数、图片数、PR 数等）；
+    - **说明文本**列：`阶段名 · 当前条目`，无任务时置空。
+  - 空闲（未导出）时四段分别显示 `0%` / `0/0` / `0/0` / 空，说明文本不占位；
+    每次点「开始导出」都会重置这四段，避免残留上一轮的数值。
+  - 两条硬约束，破坏任一条都会让进度条在导出时左右乱跳：
+    1. **进度条与所有计数列都必须在文本框左侧**，且各自定宽（进度条 `length=200`，
+       百分比 `width=5`、总任务 `width=7`、阶段计数 `width=11`）。文本随进度变化长短，
+       若把文本放左边或不定宽，每来一条 `__PROGRESS__` 都会把进度条挤走。
+    2. **列间距统一走 `_GAP`（模块级常量），`columnconfigure` 的 `weight=1` 只给最后的
+       说明列**（col6）；给中间空白列会让进度条被推到很右边、与按钮之间留出大片空白。
 - 参数以**组合（profile）**为单位持久化到 exe 同目录 `gh_token_cache.json`：一个组合 = 仓库 + 输出目录 + Token + 数量上限 + 各选项开关；UI 下拉整体切换（`_apply_profile` 组合→控件），点「保存」/导出成功后写回（`_capture_profile` 控件→组合）。Token 为单行输入框，默认掩码显示，「显示明文」切换明文；真值存于 `_token_plain`，`_resolve_token` 负责把掩码还原成真值。
   - 缓存结构 v2：`{"version":2, "profiles":[{name, repo, out, token, max_*, skip_details, include_contents, force, incremental, last_used}], "active": "<组合名>"}`，最多 20 个组合。
   - `load_cache()` 兼容 v1（`{"tokens":[...], "last_repo", "last_out"}`），检测到旧结构时调用 `_migrate_v1` 转成组合并立即写回，旧数据不删除。
