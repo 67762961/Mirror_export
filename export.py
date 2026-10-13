@@ -1929,6 +1929,82 @@ def export(args) -> Path:
         meta["file_stats"]["branches_api"] = n_branch_api
         meta["file_stats"]["branches_reused"] = n_branch_reuse
 
+    # --- graph.js：提交池（非主干节点 + 引用表） ---
+    # 供查看器按 ref 沿 parents 回溯（Commit 页切换分支）与渲染分支树。
+    # 语义：graph 是「当前分支 / 标签状态」的视图模型，每轮按线上重新派生，**不做跨轮累积**——
+    # 上游删掉分支后，其独有提交也随之从图中消失（与 branches 的快照语义一致）。
+    # 主干历史的事实来源仍是 commits.js（无限累积），已合并的提交不会因此丢失。
+    graph_nodes: dict = {}
+    graph_branches: dict = {}
+    graph_tags: dict = {}
+    graph_truncated = False
+
+    for b in branches:
+        if b.get("name") and b.get("sha"):
+            graph_branches[b["name"]] = b["sha"]
+    for t in tags:
+        if t.get("name") and t.get("sha"):
+            graph_tags[t["name"]] = t["sha"]
+
+    # 主干已导出的 sha：这些提交不进 graph（查看器运行时把两个池合并）
+    main_pool = {c.get("sha") for c in commits if c.get("sha")}
+
+    def _add_compare_node(c: dict) -> None:
+        sha = c.get("sha")
+        if not sha or sha in main_pool or sha in graph_nodes:
+            return
+        graph_nodes[sha] = {
+            "sha": sha,
+            "message": c.get("message") or "",
+            "author_name": c.get("author_name"),
+            "author_date": c.get("author_date"),
+            "author": c.get("author") or {},
+            "parents": [p for p in (c.get("parents") or []) if p],
+        }
+
+    for b in branches:
+        cmp_block = b.get("compare") or {}
+        if cmp_block.get("truncated"):
+            graph_truncated = True
+        for c in cmp_block.get("commits") or []:
+            _add_compare_node(c)
+
+    def _add_stub(sha: str) -> None:
+        """父提交/引用指向镜像外的提交：建占位节点，图上画虚线而不是假装连得上。"""
+        if not sha or sha in main_pool or sha in graph_nodes:
+            return
+        graph_nodes[sha] = {
+            "sha": sha,
+            "message": "",
+            "author_name": None,
+            "author_date": None,
+            "author": {},
+            "parents": [],
+            "stub": True,
+        }
+
+    # 引用指向的提交：不在主干池也不在节点池 → 占位（如 compare 失败的领先分支）
+    for sha in list(graph_branches.values()) + list(graph_tags.values()):
+        _add_stub(sha)
+    # 节点引用的父提交：缺失则占位（导出窗口外 / compare 截断）
+    for node in list(graph_nodes.values()):
+        for p in node.get("parents") or []:
+            _add_stub(p)
+
+    graph = {
+        "default_branch": default_branch,
+        "refs": {"branches": graph_branches, "tags": graph_tags},
+        "nodes": list(graph_nodes.values()),
+        "truncated": graph_truncated,
+    }
+    meta["file_stats"]["graph_nodes"] = len(graph_nodes)
+    meta["file_stats"]["graph_truncated"] = graph_truncated
+    if not getattr(args, "no_branches", False):
+        log(
+            f"  graph: 节点 {len(graph_nodes)}（主干池 {len(main_pool)} 不重复存）, "
+            f"refs 分支 {len(graph_branches)} / 标签 {len(graph_tags)}, truncated={graph_truncated}"
+        )
+
     # --- write data JS (file:// 兼容) ---
     log("写出 data/*.js ...")
     data_dir = out / "data"
@@ -1941,6 +2017,7 @@ def export(args) -> Path:
         "releases": releases,
         "files": {"tree": files_meta, "contents": contents, "truncated": truncated},
         "branches": branches,
+        "graph": graph,
     }
     stage_begin("写出数据", len(writes))
     for i, (name, payload) in enumerate(writes.items(), 1):

@@ -764,6 +764,12 @@
     D.tags = D.tags || [];
     D.releases = D.releases || [];
     D.branches = D.branches || [];
+    // graph.js：提交池 + 引用表（旧导出包没有此文件，缺省即降级）
+    D.graph = D.graph || {};
+    D.graph.refs = D.graph.refs || {};
+    D.graph.refs.branches = D.graph.refs.branches || {};
+    D.graph.refs.tags = D.graph.refs.tags || {};
+    D.graph.nodes = D.graph.nodes || [];
     D.files = D.files || { tree: [], contents: {} };
     D.files.tree = D.files.tree || [];
     D.files.contents = D.files.contents || {};

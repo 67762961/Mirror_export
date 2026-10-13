@@ -76,6 +76,7 @@ gh-mirror-<owner>-<name>-<date>/
 │   ├── releases.js
 │   ├── files.js
 │   ├── branches.js
+│   ├── graph.js
 │   └── manifest.json
 └── assets/
     ├── .index.json                path/blob sha + ext:<url> → 本地相对路径（增量判断）
@@ -128,6 +129,12 @@ export.export(args)
         → files[]（聚合差异；--skip-details 时为空）
         → 用 total_commits > 实际返回条数自判 truncated（不硬编码 API 上限）
       · 分支列表是快照：上游删掉的分支本包不再保留（与 commit 的无限累积相反）
+12) graph.js（提交池 + 引用表）
+      · refs = 分支名/标签名 → sha（来自 branches / tags）
+      · nodes = 非主干提交节点（compare 里的独有 commit）+ 悬空占位（stub）
+      · 主干已导出的 sha **不重复存**：查看器运行时把 commits.js 与 graph.nodes 合并成一张表
+      · 每轮按线上重新派生，**不做跨轮累积**（与 branches 快照语义一致）；
+        主干历史仍由 commits.js 无限累积，已合并提交不会丢
         ↓
 copy_viewer + 写出 data/*.js + manifest.json
 ```
@@ -247,11 +254,11 @@ python export.py --repo owner/name --full   # 强制全量
 
 ### 4.3 `viewer/`（内网查看器）
 
-- `index.html` 固定按序加载 8 个 `data/*.js`，再加载 `js/app.js`；
+- `index.html` 固定按序加载 9 个 `data/*.js`，再加载 `js/app.js`；
 - `app.js` 从 `window.GH_DATA` 读数据，用内存 `state` 切换视图（无 hash 路由）；
 - 换页（侧栏 / 列表进详情 / 站内引用互跳）会把当前视图快照压入 `navHistory`；详情页顶部「← 返回」弹栈回到上一浏览页，栈空则清 detail 回当前列表；
 - 搜索、PR/Issue 过滤、文件树点选、compare 运行只重绘，不入导航历史；
-- 视图：`overview` / `prs` / `issues` / `commits` / `tags` / `compare` / `files` / `readme`；
+- 视图：`overview` / `prs` / `issues` / `commits` / `tags` / `branches` / `compare` / `files` / `readme`；
 - 概览含 GitHub 风格贡献墙：按日统计 Commit（`author_date`）、PR/Issue（`created_at`）、Release（`published_at`）、Tag（前端用同名 Release 日期或对应 commit 日期推断；无法定位则不进墙）。热力图横滑全历史，默认停在最右；色阶按当日总贡献的四分位（少量非零天时用固定阈值）。墙下汇总行可选 1 天 / 7 天 / 30 天 / 90 天 / 365 天 / 从最初 / 自定义天数，只影响汇总数字，不缩放热力图；变更后将墙滚回最右；
 - 详情页支持：PR 文件 diff、Issue 评论、Commit message 与文件、Release compare 摘要、文件树与已缓存文本源码；
 - 正文中的 `#123` 与同仓库 GitHub 链接会被改写为站内跳转。
@@ -274,6 +281,7 @@ window.GH_DATA=window.GH_DATA||{};window.GH_DATA.<name>=<compact-json>;
 | `releases.js` | array | `tag_name`、`body`、`compare`、`related_prs[]` |
 | `files.js` | object | `tree[]`（path/type/size/sha）、`contents{path→text}`、`truncated` |
 | `branches.js` | array | `name`、`sha`、`protected`、`default`、`default_branch`、`head{message,author_name,author_date}`、`compare{base,ahead_by,behind_by,status,merge_base,commits[],files[],truncated[,behind_approx]}` |
+| `graph.js` | object | `default_branch`、`refs{branches{name→sha},tags{name→sha}}`、`nodes[]{sha,message,author_name,author_date,author,parents[],stub?}`、`truncated` |
 
 `files.contents` 中的路径与 `tree` 一致；图片正文不进 contents，而落到 `assets/<path>`，由查看器按相对路径引用。
 
