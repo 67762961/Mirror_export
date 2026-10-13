@@ -50,6 +50,9 @@ TOKEN_CACHE_FILE = EXE_DIR / "gh_token_cache.json"
 CACHE_VERSION = 2
 MAX_PROFILES = 20
 
+# 进度区各控件之间的统一间距，保证间隔视觉均匀
+_GAP = 10
+
 # 一个「组合」= 仓库 + 输出目录 + Token + 数量上限 + 各选项开关
 PROFILE_FIELDS = (
     "repo",
@@ -741,15 +744,28 @@ class App(tk.Tk):
         # 操作（始终可见）
         actions = ttk.Frame(outer)
         actions.grid(row=9, column=0, sticky="ew", pady=(4, 14))
-        actions.columnconfigure(5, weight=1)
+        # 从左到右：按钮 / 按钮 / 进度条 / 总任务进度 / 阶段位置 / 阶段内计数 / 说明文本。
+        # 各列统一用 _GAP 作为列间距，保证视觉间隔均匀；进度条与所有计数列都定宽，
+        # 文本长度变化时不会把进度条挤得左右移动。weight 只给最后的说明列。
+        actions.columnconfigure(6, weight=1)
         self.run_btn = ttk.Button(actions, text="  开始导出  ", style="Accent.TButton", command=self._start)
         self.run_btn.grid(row=0, column=0, sticky="w", ipady=4)
         self.open_btn = ttk.Button(actions, text="  打开输出目录  ", command=self._open_out, state="disabled")
-        self.open_btn.grid(row=0, column=1, sticky="w", padx=(12, 0), ipady=4)
-        self.progress_label = ttk.Label(actions, text="", style="Muted.TLabel")
-        self.progress_label.grid(row=0, column=3, sticky="e", padx=(12, 0))
+        self.open_btn.grid(row=0, column=1, sticky="w", padx=(_GAP, 0), ipady=4)
         self.progress = ttk.Progressbar(actions, mode="determinate", length=200, maximum=100)
-        self.progress.grid(row=0, column=4, sticky="e", padx=(8, 0))
+        self.progress.grid(row=0, column=2, sticky="w", padx=(_GAP, 0))
+        # 全局百分比
+        self.progress_pct = ttk.Label(actions, text="0%", style="Muted.TLabel", width=5, anchor="w")
+        self.progress_pct.grid(row=0, column=3, sticky="w", padx=(_GAP, 0))
+        # 总任务进度：已完成阶段数 / 总阶段数
+        self.progress_stages = ttk.Label(actions, text="0/0", style="Muted.TLabel", width=7, anchor="w")
+        self.progress_stages.grid(row=0, column=4, sticky="w", padx=(_GAP, 0))
+        # 当前阶段内的文件/条目计数
+        self.progress_count = ttk.Label(actions, text="0/0", style="Muted.TLabel", width=11, anchor="w")
+        self.progress_count.grid(row=0, column=5, sticky="w", padx=(_GAP, 0))
+        # 进度说明语句：没任务时置空，不占位
+        self.progress_label = ttk.Label(actions, text="", style="Muted.TLabel", anchor="w")
+        self.progress_label.grid(row=0, column=6, sticky="ew", padx=(_GAP, 0))
 
         # 日志
         logwrap = ttk.Frame(outer, style="Card.TFrame")
@@ -1029,17 +1045,39 @@ class App(tk.Tk):
         stage = str(info.get("stage") or "")
         done = int(info.get("done") or 0)
         total = int(info.get("total") or 0)
-        if total > 0:
-            pct = max(0, min(100, int(done * 100 / total)))
-            try:
-                self.progress.configure(mode="determinate", maximum=100, value=pct)
-            except Exception:
-                pass
-            self.progress_label.configure(text=f"{stage} {done}/{total} {pct}%")
-            self.status.configure(text=f"{stage} {done}/{total}（{pct}%）")
+        note = str(info.get("note") or "")
+        # 全局加权百分比由 exporter 算好；缺失时退回阶段内百分比（兼容旧 exporter）
+        overall = info.get("overall")
+        stage_idx = int(info.get("stage_idx") or 0)
+        stage_n = int(info.get("stage_n") or 0)
+        if overall is None:
+            overall = int(done * 100 / total) if total else 0
+        try:
+            overall = max(0, min(100, int(overall)))
+            self.progress.configure(mode="determinate", maximum=100, value=overall)
+        except Exception:
+            pass
+        # 四段信息各自独立成列，从左到右：
+        #   百分比 | 总任务进度(已完成阶段/总阶段) | 阶段内计数(done/total) | 说明文本
+        # 无任务时统一显示 0/0、0% 占位，说明文本留空不占位。
+        self.progress_pct.configure(text=f"{overall}%")
+        if stage_idx and stage_n:
+            # 阶段进行中：最后一段阶段视为已完成，进度条走满时同步到 N/N
+            finished = stage_idx if (total and done >= total) else stage_idx - 1
+            finished = max(0, min(stage_n, finished))
+            self.progress_stages.configure(text=f"{finished}/{stage_n}")
         else:
-            self.progress_label.configure(text=stage)
-            self.status.configure(text=stage)
+            self.progress_stages.configure(text="0/0")
+        self.progress_count.configure(text=f"{done}/{total}" if total else "0/0")
+        if note:
+            note = note if len(note) <= 60 else note[:57] + "..."
+            detail = f" · {note}"
+        else:
+            detail = ""
+        self.progress_label.configure(text=f"{stage}{detail}" if stage else "")
+        self.status.configure(
+            text=f"{stage} {done}/{total}（{overall}%）" if total else f"{stage}（{overall}%）"
+        )
 
     def _poll(self):
         try:
@@ -1048,7 +1086,8 @@ class App(tk.Tk):
                 if line == "__DONE__":
                     self.progress.stop()
                     self.progress.configure(mode="determinate", value=100)
-                    self.progress_label.configure(text="100%")
+                    self.progress_pct.configure(text="100%")
+                    self.progress_label.configure(text="导出完成")
                     self.run_btn.configure(state="normal", text="开始导出")
                     self.open_btn.configure(state="normal")
                     self._set_profile_btns_state(True)
@@ -1060,7 +1099,8 @@ class App(tk.Tk):
                     self.progress.stop()
                     self.run_btn.configure(state="normal", text="开始导出")
                     self._set_profile_btns_state(True)
-                    self.progress_label.configure(text="失败")
+                    # 保留进度条当前位置，便于定位卡在哪一步
+                    self.progress_label.configure(text="失败（进度停在出错处）")
                     self.status.configure(text="导出失败，请看日志")
                 elif line.startswith("__PROGRESS__"):
                     self._apply_progress(line[len("__PROGRESS__"):])
@@ -1156,6 +1196,10 @@ class App(tk.Tk):
             self.progress.configure(mode="determinate", maximum=100, value=0)
         except Exception:
             self.progress.start(12)
+        # 清掉上一轮的残留值，四段信息各自归零占位
+        self.progress_pct.configure(text="0%")
+        self.progress_stages.configure(text="0/0")
+        self.progress_count.configure(text="0/0")
         self.progress_label.configure(text="启动…")
         self.status.configure(text="正在导出…")
         self._append_log(f"开始导出 {args.repo} → {args.out}")
