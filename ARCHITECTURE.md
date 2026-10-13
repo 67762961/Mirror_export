@@ -119,6 +119,15 @@ export.export(args)
       · 外链下载到 assets/externals/；树内 raw URL 直接映射已有 assets
       · 写出 meta.image_map：原始 URL → assets 相对路径（键仍是 markdown 里的原始 URL）
 11) branches
+      · GET /repos/{repo}/branches（--max-branches，默认 100）
+      · 每个分支补 head 摘要（能从已导出的 commit 池取到就不发请求）
+      · tip 已包含于主干历史 → 0 次 API，本地算 ahead=0 / behind（标注 behind_approx）
+      · 否则 1 次 GET /compare/{主干tip_sha}...{分支tip_sha}
+        → ahead_by / behind_by / status / merge_base_commit
+        → commits[]（slim，含 parents，上限 --max-branch-commits）
+        → files[]（聚合差异；--skip-details 时为空）
+        → 用 total_commits > 实际返回条数自判 truncated（不硬编码 API 上限）
+      · 分支列表是快照：上游删掉的分支本包不再保留（与 commit 的无限累积相反）
         ↓
 copy_viewer + 写出 data/*.js + manifest.json
 ```
@@ -145,10 +154,13 @@ python export.py --repo owner/name --full   # 强制全量
 | `--incremental` / `--full` | 增量开 | 是否复用上次 `data` 缓存 |
 | `--force` | 关 | 允许覆盖非空输出目录 |
 | `--max-prs` / `--max-issues` / `--max-tags` | 0=GUI 默认有上限，CLI 0 表示尽量多 | 数量上限 |
+| `--max-branches` | 100 | 最多导出多少个分支；0=全部 |
+| `--max-branch-commits` | 100 | 每个分支最多保留多少条「独有提交」；0=全部 |
+| `--no-branches` | 关 | 完全不导出分支数据（`branches.js` 写空数组，查看器自动降级） |
 | `--max-commits` | 100 | 每轮从 HEAD 往回爬的 commit 窗口 |
 | `--max-commit-diffs` | 同 max-commits | 本轮最多新拉多少条 commit diff |
 | `--max-file-bytes` | 400000 | 单文件正文缓存上限 |
-| `--skip-details` | 关 | 不拉 diff/评论，更快 |
+| `--skip-details` | 关 | 不拉 diff/评论，更快；分支仍拉 ahead/behind/commits 骨架，仅跳过文件差异 |
 | `--no-contents` | 关 | 只保留文件树，不缓存源码 |
 | `--no-assets` | 关 | 不下载图片 |
 
@@ -157,6 +169,7 @@ python export.py --repo owner/name --full   # 强制全量
 - `http_get`：带 Bearer Token、重试、RateLimit 等待；
 - `paginate`：`per_page=100` 翻页，`max_items<=0` 表示尽量拉全；
 - `map_pr` / `map_issue` / `map_commit` / `map_file`：把 GitHub API 裁剪成镜像用的精简结构；
+- `export()` 内 branches 段：分支清单 + 头部摘要 + 与默认分支对比，含纯落后分支的 0 请求快路径；
 - `js_assign` / `parse_data_js`：`data/*.js` 写出与回读（增量合并的基础）；
 - `load_previous_export` / `load_asset_index`：读取上次导出包；
 - `download_repo_images`：按 blob sha 增量下载图片；
@@ -260,7 +273,7 @@ window.GH_DATA=window.GH_DATA||{};window.GH_DATA.<name>=<compact-json>;
 | `tags.js` | array | `name`、`sha` |
 | `releases.js` | array | `tag_name`、`body`、`compare`、`related_prs[]` |
 | `files.js` | object | `tree[]`（path/type/size/sha）、`contents{path→text}`、`truncated` |
-| `branches.js` | array | `name`、`sha`、`protected` |
+| `branches.js` | array | `name`、`sha`、`protected`、`default`、`default_branch`、`head{message,author_name,author_date}`、`compare{base,ahead_by,behind_by,status,merge_base,commits[],files[],truncated[,behind_approx]}` |
 
 `files.contents` 中的路径与 `tree` 一致；图片正文不进 contents，而落到 `assets/<path>`，由查看器按相对路径引用。
 
@@ -290,6 +303,7 @@ window.GH_DATA=window.GH_DATA||{};window.GH_DATA.<name>=<compact-json>;
 | 图片（树内） | `assets/.index.json` 中 path/sha 一致且文件存在 | 跳过下载 |
 | 正文外链图片 | `.index.json` 中 `ext:<url>` 对应文件存在 | 跳过下载，仍写入 `image_map` |
 | Release compare | `published_at` 未变且已有 `compare` | 整块复用 |
+| 分支条目 | `sha` 未变、已有 `compare` 与 `head`、且 `default_branch` 未变 | 整条复用（0 次 API） |
 
 设计意图：多轮导出越跑越快，且旧 commit/diff 不被本轮窗口裁掉。改缓存键或结构时，必须保证旧包仍能被 `parse_data_js` 读回。
 
