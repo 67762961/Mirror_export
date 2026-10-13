@@ -11,6 +11,7 @@
     issueDetail: null,
     commitDetail: null,
     releaseDetail: null,
+    branchDetail: null,
     search: "",
     filePath: null,
     showMdRaw: false,
@@ -872,6 +873,7 @@
       issueDetail: state.issueDetail,
       commitDetail: state.commitDetail,
       releaseDetail: state.releaseDetail,
+      branchDetail: state.branchDetail,
       search: state.search,
       filePath: state.filePath,
       compareBase: state.compareBase,
@@ -887,6 +889,7 @@
     state.issueDetail = snap.issueDetail;
     state.commitDetail = snap.commitDetail;
     state.releaseDetail = snap.releaseDetail;
+    state.branchDetail = snap.branchDetail;
     state.search = snap.search;
     state.filePath = snap.filePath;
     state.compareBase = snap.compareBase;
@@ -899,6 +902,7 @@
     state.issueDetail = null;
     state.commitDetail = null;
     state.releaseDetail = null;
+    state.branchDetail = null;
     state.filePath = null;
   }
 
@@ -933,6 +937,7 @@
     if (opts.issueDetail !== undefined) state.issueDetail = opts.issueDetail;
     if (opts.commitDetail !== undefined) state.commitDetail = opts.commitDetail;
     if (opts.releaseDetail !== undefined) state.releaseDetail = opts.releaseDetail;
+    if (opts.branchDetail !== undefined) state.branchDetail = opts.branchDetail;
     if (opts.filePath !== undefined) state.filePath = opts.filePath;
     $$(".nav-item").forEach((b) => b.classList.toggle("active", b.dataset.view === view));
     render();
@@ -1303,11 +1308,10 @@
   /* ---------- overview ---------- */
   function renderOverview() {
     const m = D.meta;
-    const openIssues = D.issues.filter((i) => i.state === "open").length;
-    const merged = D.prs.filter((p) => p.merged).length;
 
-    const stat = (n, label, view, filter) =>
-      `<div class="stat stat-click" data-goto="${view}"${filter ? ` data-goto-filter="${filter}"` : ""} title="点击进入 ${esc(label)}">
+    // reset=true：点击后把该视图的筛选重置为「全部」，保证方块数字与列表条数一致
+    const stat = (n, label, view, filter, reset) =>
+      `<div class="stat stat-click" data-goto="${view}"${filter ? ` data-goto-filter="${filter}"` : ""}${reset ? ` data-goto-reset="1"` : ""} title="点击进入 ${esc(label)}">
         <div class="stat-n">${n}</div><div class="stat-l">${esc(label)}</div>
       </div>`;
 
@@ -1316,12 +1320,11 @@
       <p class="muted" style="margin-top:0">${esc(m.description || "（无描述）")}</p>
       ${m.private ? `<div class="warn-box">私有仓库只读镜像 · 导出于 ${esc(fmtDate(m.exported_at))}</div>` : ""}
       <div class="stats">
-        ${stat(D.prs.length, "Pull Requests", "prs")}
-        ${stat(merged, "Merged PR", "prs", "merged")}
-        ${stat(D.issues.length, "Issues", "issues")}
-        ${stat(openIssues, "Open Issue", "issues", "open")}
+        ${stat(D.prs.length, "Pull Requests", "prs", null, true)}
+        ${stat(D.issues.length, "Issues", "issues", null, true)}
         ${stat(D.commits.length, "Commits", "commits")}
         ${stat(D.tags.length, "Tags", "tags")}
+        ${stat(D.branches.length, "Branches", "branches")}
       </div>
       <div class="panel">
         <div class="panel-hd">仓库信息</div>
@@ -1839,6 +1842,123 @@
     `;
   }
 
+  /* ---------- Branches ---------- */
+  function branchHeadSummary(b) {
+    const h = b.head || {};
+    const parts = [];
+    const msg = String(h.message || "").split("\n")[0];
+    if (msg) parts.push(esc(msg));
+    if (h.author_name) parts.push(esc(h.author_name));
+    if (h.author_date) parts.push(esc(fmtDate(h.author_date)));
+    return parts.join(" · ");
+  }
+
+  function branchRow(b) {
+    const cmp = b.compare || {};
+    const ahead = cmp.ahead_by;
+    const behind = cmp.behind_by;
+    const summary = branchHeadSummary(b);
+    return `
+      <div class="row" data-branch="${esc(b.name)}">
+        <div class="row-main">
+          <div class="row-title mono">${esc(b.name)}</div>
+          <div class="row-meta">
+            ${b.default ? `<span class="pill pill-green">默认分支</span>` : ""}
+            ${b.protected ? `<span class="pill">Protected</span>` : ""}
+            <span class="sha" title="${esc(b.sha || "")}">${shortSha(b.sha)}</span>
+            ${ahead != null ? `<span class="stat-add">领先 ${ahead}</span>` : ""}
+            ${behind != null ? `<span class="stat-del">落后 ${behind}</span>` : ""}
+            ${summary ? `<span>${summary}</span>` : ""}
+          </div>
+        </div>
+      </div>`;
+  }
+
+  function renderBranches() {
+    if (state.branchDetail) {
+      const b = (D.branches || []).find((x) => x.name === state.branchDetail);
+      return b ? renderBranchDetail(b) : `<div class="empty">未找到分支 ${esc(state.branchDetail)}</div>`;
+    }
+
+    const all = (D.branches || []).slice();
+    const list = all
+      .filter((b) => matchSearch(`${b.name} ${b.sha || ""}`))
+      .sort((a, b) => {
+        if (!!a.default !== !!b.default) return a.default ? -1 : 1;
+        return String(a.name).localeCompare(String(b.name));
+      });
+    const hasCompare = all.some((b) => b.compare && b.compare.ahead_by != null);
+
+    return `
+      <h1 class="h1">Branches</h1>
+      <p class="muted small" style="margin-top:0">默认分支 ${esc((D.meta && D.meta.default_branch) || "—")} · 共 ${all.length} 个分支${hasCompare ? "" : " · 本次导出未包含与默认分支的差异统计"}</p>
+      <div class="count-line">显示 ${list.length} 个</div>
+      <div class="list">${list.map(branchRow).join("") || `<div class="empty">无分支数据（导出包可能未包含 branches.js）</div>`}</div>
+    `;
+  }
+
+  function renderBranchDetail(b) {
+    const cmp = b.compare || {};
+    const commits = cmp.commits || [];
+    const files = cmp.files || [];
+    const known = (sha) => !!sha && (D.commits || []).some((c) => c.sha === sha);
+    return `
+      <button class="back-link" data-nav-back>← 返回</button>
+      <div class="detail-hd">
+        <div>
+          <h1 class="detail-title mono">${esc(b.name)}</h1>
+          <div class="detail-meta">
+            ${b.default ? `<span class="pill pill-green">默认分支</span>` : ""}
+            ${b.protected ? `<span class="pill">Protected</span>` : ""}
+            <span class="sha">${esc(b.sha || "")}</span>
+          </div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-hd">头部提交</div>
+        <div class="panel-bd">
+          ${b.head ? `
+            <div class="branch-head-msg">${esc(String(b.head.message || "").split("\n")[0] || "（无提交说明）")}</div>
+            <div class="row-meta">
+              <span>${esc(b.head.author_name || "—")}</span>
+              <span>${esc(fmtDate(b.head.author_date))}</span>
+              ${known(b.sha) ? `<span class="small muted">该提交在镜像中，可在 Commits 页查看</span>` : ""}
+            </div>` : `<div class="empty">本次导出未包含头部提交信息</div>`}
+        </div>
+      </div>
+      ${cmp.ahead_by != null || cmp.behind_by != null ? `
+        <div class="panel">
+          <div class="panel-hd">与默认分支的差异</div>
+          <div class="panel-bd">
+            <div class="row-meta">
+              <span class="stat-add">领先 ${cmp.ahead_by != null ? cmp.ahead_by : "—"} 个提交</span>
+              <span class="stat-del">落后 ${cmp.behind_by != null ? cmp.behind_by : "—"} 个提交</span>
+              ${cmp.merge_base ? `<span>分叉点 <span class="sha">${shortSha(cmp.merge_base)}</span></span>` : ""}
+              ${cmp.truncated ? `<span class="small muted">（提交列表已截断）</span>` : ""}
+            </div>
+          </div>
+        </div>` : ""}
+      ${commits.length ? `
+        <h2 class="h2">该分支独有的提交 (${commits.length})</h2>
+        <div class="list" style="margin-bottom:18px">
+          ${commits.map((c) => `
+            <div class="row" ${known(c.sha) ? `data-commit="${esc(c.sha)}"` : 'style="cursor:default"'}>
+              <div class="row-main">
+                <div class="row-title">${esc(String(c.message || "").split("\n")[0])}</div>
+                <div class="row-meta">
+                  <span class="sha" title="${esc(c.sha || "")}">${shortSha(c.sha)}</span>
+                  <span>${esc(c.author_name || (c.author && c.author.login) || "—")}</span>
+                  <span>${esc(fmtDate(c.author_date))}</span>
+                </div>
+              </div>
+            </div>`).join("")}
+        </div>` : ""}
+      ${files.length ? `
+        <h2 class="h2">文件变更 (${files.length})</h2>
+        ${files.map(fileDiffHtml).join("")}` : ""}
+    `;
+  }
+
   /* ---------- main render ---------- */
   function render() {
     const el = $("#content");
@@ -1849,6 +1969,7 @@
       case "issues": html = renderIssues(); break;
       case "commits": html = renderCommits(); break;
       case "tags": html = renderTags(); break;
+      case "branches": html = renderBranches(); break;
       case "compare": html = renderCompare(); break;
       case "files": html = renderFiles(); break;
       case "readme": html = renderReadme(); break;
@@ -1925,6 +2046,9 @@
     content.querySelectorAll("[data-release]").forEach((n) => {
       n.addEventListener("click", () => setView("tags", { releaseDetail: n.dataset.release, clearDetails: true }));
     });
+    content.querySelectorAll("[data-branch]").forEach((n) => {
+      n.addEventListener("click", () => setView("branches", { branchDetail: n.dataset.branch, clearDetails: true }));
+    });
     content.querySelectorAll("[data-nav-back]").forEach((n) => {
       n.addEventListener("click", () => goBack());
     });
@@ -1991,9 +2115,11 @@
       n.addEventListener("click", () => {
         const view = n.dataset.goto;
         const filt = n.dataset.gotoFilter;
+        const reset = n.dataset.gotoReset;
         pushHistory();
-        if (view === "prs" && filt) state.prFilter = filt;
-        if (view === "issues" && filt) state.issueFilter = filt;
+        // 方块数字为总数，点击后筛选重置为「全部」，避免残留上次筛选导致条数对不上
+        if (view === "prs") state.prFilter = filt || (reset ? "all" : state.prFilter);
+        if (view === "issues") state.issueFilter = filt || (reset ? "all" : state.issueFilter);
         clearDetails();
         setView(view, { pushHistory: false });
       });
@@ -2047,6 +2173,7 @@
     $("#cnt-prs").textContent = String(D.prs.length);
     $("#cnt-issues").textContent = String(D.issues.length);
     $("#cnt-commits").textContent = String(D.commits.length);
+    $("#cnt-branches").textContent = String(D.branches.length);
 
     $("#topbar-meta").innerHTML = m.html_url
       ? `<span class="mono small">${esc(m.html_url)}</span>`

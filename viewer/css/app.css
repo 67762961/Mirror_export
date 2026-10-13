@@ -1128,3 +1128,10 @@ tr.hunk td {
   color: var(--text-muted);
   margin-bottom: 10px;
 }
+
+/* ---- Branches ---- */
+.branch-head-msg {
+  font-weight: 600;
+  word-break: break-word;
+  margin-bottom: 4px;
+}
