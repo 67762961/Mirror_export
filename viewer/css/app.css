@@ -1135,3 +1135,14 @@ tr.hunk td {
   word-break: break-word;
   margin-bottom: 4px;
 }
+.branch-commit-diff {
+  margin-top: 6px;
+}
+.branch-commit-diff > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--accent);
+  user-select: none;
+}
+.branch-commit-diff > summary:hover { text-decoration: underline; }
+.branch-commit-diff .file-block:first-of-type { margin-top: 8px; }

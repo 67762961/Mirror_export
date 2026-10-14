@@ -776,6 +776,12 @@
     D.meta = D.meta || {};
   }
 
+  /* graph.js 的节点池（主干提交在 commits.js 里，这里只补非主干节点） */
+  function findGraphNode(sha) {
+    if (!sha) return null;
+    return (D.graph.nodes || []).find((n) => n.sha === sha) || null;
+  }
+
   function findReadmePath() {
     const contents = D.files.contents || {};
     const tree = D.files.tree || [];
@@ -1947,7 +1953,11 @@
       ${commits.length ? `
         <h2 class="h2">该分支独有的提交 (${commits.length})</h2>
         <div class="list" style="margin-bottom:18px">
-          ${commits.map((c) => `
+          ${commits.map((c) => {
+            const node = findGraphNode(c.sha);
+            const cFiles = (node && node.files) || [];
+            const nFiles = cFiles.length;
+            return `
             <div class="row" ${known(c.sha) ? `data-commit="${esc(c.sha)}"` : 'style="cursor:default"'}>
               <div class="row-main">
                 <div class="row-title">${esc(String(c.message || "").split("\n")[0])}</div>
@@ -1955,9 +1965,18 @@
                   <span class="sha" title="${esc(c.sha || "")}">${shortSha(c.sha)}</span>
                   <span>${esc(c.author_name || (c.author && c.author.login) || "—")}</span>
                   <span>${esc(fmtDate(c.author_date))}</span>
+                  ${nFiles ? `<span>${nFiles} 文件</span>` : ""}
+                  ${node && node.stats && node.stats.additions != null ? `<span class="stat-add">+${node.stats.additions}</span>` : ""}
+                  ${node && node.stats && node.stats.deletions != null ? `<span class="stat-del">-${node.stats.deletions}</span>` : ""}
                 </div>
+                ${nFiles ? `
+                  <details class="branch-commit-diff">
+                    <summary>查看文件变更 (${nFiles})</summary>
+                    ${cFiles.map(fileDiffHtml).join("")}
+                  </details>` : ""}
               </div>
-            </div>`).join("")}
+            </div>`;
+          }).join("")}
         </div>` : ""}
       ${files.length ? `
         <h2 class="h2">文件变更 (${files.length})</h2>

@@ -135,6 +135,10 @@ export.export(args)
       · 主干已导出的 sha **不重复存**：查看器运行时把 commits.js 与 graph.nodes 合并成一张表
       · 每轮按线上重新派生，**不做跨轮累积**（与 branches 快照语义一致）；
         主干历史仍由 commits.js 无限累积，已合并提交不会丢
+13) 分支独有 commit 逐条 diff（--max-branch-diffs，默认 30）
+      · 只为真实节点（非 stub）补 diff，按 author_date 新→旧排序，预算优先给最近的提交
+      · 上一轮 graph 节点里已有 diff 的按 sha 整块复用，且**不消耗预算**
+      · 预算耗尽后剩余节点只保留骨架（图上不断链），不报错
         ↓
 copy_viewer + 写出 data/*.js + manifest.json
 ```
@@ -163,6 +167,7 @@ python export.py --repo owner/name --full   # 强制全量
 | `--max-prs` / `--max-issues` / `--max-tags` | 0=GUI 默认有上限，CLI 0 表示尽量多 | 数量上限 |
 | `--max-branches` | 100 | 最多导出多少个分支；0=全部 |
 | `--max-branch-commits` | 100 | 每个分支最多保留多少条「独有提交」；0=全部 |
+| `--max-branch-diffs` | 30 | 本轮最多为多少条分支独有 commit 拉逐条 diff；0=不拉；`--skip-details` 时强制为 0 |
 | `--no-branches` | 关 | 完全不导出分支数据（`branches.js` 写空数组，查看器自动降级） |
 | `--max-commits` | 100 | 每轮从 HEAD 往回爬的 commit 窗口 |
 | `--max-commit-diffs` | 同 max-commits | 本轮最多新拉多少条 commit diff |
@@ -281,7 +286,7 @@ window.GH_DATA=window.GH_DATA||{};window.GH_DATA.<name>=<compact-json>;
 | `releases.js` | array | `tag_name`、`body`、`compare`、`related_prs[]` |
 | `files.js` | object | `tree[]`（path/type/size/sha）、`contents{path→text}`、`truncated` |
 | `branches.js` | array | `name`、`sha`、`protected`、`default`、`default_branch`、`head{message,author_name,author_date}`、`compare{base,ahead_by,behind_by,status,merge_base,commits[],files[],truncated[,behind_approx]}` |
-| `graph.js` | object | `default_branch`、`refs{branches{name→sha},tags{name→sha}}`、`nodes[]{sha,message,author_name,author_date,author,parents[],stub?}`、`truncated` |
+| `graph.js` | object | `default_branch`、`refs{branches{name→sha},tags{name→sha}}`、`nodes[]{sha,message,author_name,author_date,author,parents[],files[]?,stats?{},has_diff?,stub?}`、`truncated` |
 
 `files.contents` 中的路径与 `tree` 一致；图片正文不进 contents，而落到 `assets/<path>`，由查看器按相对路径引用。
 
@@ -312,6 +317,7 @@ window.GH_DATA=window.GH_DATA||{};window.GH_DATA.<name>=<compact-json>;
 | 正文外链图片 | `.index.json` 中 `ext:<url>` 对应文件存在 | 跳过下载，仍写入 `image_map` |
 | Release compare | `published_at` 未变且已有 `compare` | 整块复用 |
 | 分支条目 | `sha` 未变、已有 `compare` 与 `head`、且 `default_branch` 未变 | 整条复用（0 次 API） |
+| 分支 commit diff | graph 节点 sha 命中且上轮已有 `files`/`has_diff` | 整块复用（0 次 API，不占预算） |
 
 设计意图：多轮导出越跑越快，且旧 commit/diff 不被本轮窗口裁掉。改缓存键或结构时，必须保证旧包仍能被 `parse_data_js` 读回。
 

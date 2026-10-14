@@ -94,6 +94,7 @@ python export.py --repo 67762961/Csv_reader --out gh-mirror --force
 python export.py --repo 67762961/Csv_reader --max-prs 100 --max-commits 300
 python export.py --repo 67762961/Csv_reader --skip-details   # 只要列表，不要 diff，更快
 python export.py --repo 67762961/Csv_reader --max-branches 50   # 限制分支数（默认 100）
+python export.py --repo 67762961/Csv_reader --max-branch-diffs 0  # 不拉分支提交的逐条 diff
 python export.py --repo 67762961/Csv_reader --no-branches      # 完全不要分支数据
 ```
 
@@ -130,7 +131,7 @@ gh-mirror-67762961-Csv_reader-20260914/
 - **Issue 列表**：同样支持筛选与详情评论；评论中的图片同样走 `image_map` 本地化
 - **Commit**：默认分支提交历史，含完整 message
 - **Tag / Release**：标签与发行说明；body 中的图片同样会被下载
-- **Branch**：分支清单（默认分支标记、protected、短 sha、头部提交摘要、与默认分支的领先/落后条数）；点进详情看该分支独有的提交与文件差异。**分支列表是快照**：上游删掉的分支，镜像里也不再保留（Github 上删了就看不到了，本项目是只读镜像，就该如此）；与 commit 的「无限累积」语义相反
+- **Branch**：分支清单（默认分支标记、protected、短 sha、头部提交摘要、与默认分支的领先/落后条数）；点进详情看该分支独有的提交与文件差异——每个独有提交可展开查看自己的 diff。**分支列表是快照**：上游删掉的分支，镜像里也不再保留（Github 上删了就看不到了，本项目是只读镜像，就该如此）；与 commit 的「无限累积」语义相反
 - **版本对比**：基于已导出 commit 的近似对比（选 base → head）
 - **文件浏览**：默认分支文件树 + 已缓存的文本源码
 

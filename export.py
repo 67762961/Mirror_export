@@ -71,6 +71,7 @@ STAGES = [
     ("正文图片", 5),
     ("Branches", 1),
     ("分支对比", 3),
+    ("分支 diff", 3),
     ("写出数据", 1),
 ]
 
@@ -406,7 +407,7 @@ def load_previous_export(out: Path) -> dict:
     prev: dict = {}
     if not data_dir.is_dir():
         return prev
-    for name in ("meta", "prs", "issues", "commits", "tags", "releases", "files", "branches"):
+    for name in ("meta", "prs", "issues", "commits", "tags", "releases", "files", "branches", "graph"):
         p = data_dir / f"{name}.js"
         if p.exists():
             val = parse_data_js(p, name)
@@ -1991,6 +1992,65 @@ def export(args) -> Path:
         for p in node.get("parents") or []:
             _add_stub(p)
 
+    # --- 分支独有 commit 的逐条 diff（预算控制 + 增量复用） ---
+    # 复用上一轮 graph 节点里已抓到的 diff（按 sha 命中，不消耗预算）。
+    prev_graph_nodes = {}
+    for n in (prev.get("graph") or {}).get("nodes") or []:
+        if isinstance(n, dict) and n.get("sha"):
+            prev_graph_nodes[n["sha"]] = n
+
+    def _node_has_diff(n: dict) -> bool:
+        return bool(n.get("has_diff")) or ("files" in n)
+
+    branch_diff_budget = int(getattr(args, "max_branch_diffs", 30) or 0)
+    if args.skip_details:
+        branch_diff_budget = 0
+    n_bd_fetch = 0
+    n_bd_reuse = 0
+    n_bd_nodiff = 0
+
+    # 只为真实节点（非 stub）补 diff，按时间新→旧，保证预算优先给最近的提交
+    diff_targets = [
+        n for n in graph_nodes.values()
+        if not n.get("stub") and n.get("sha")
+    ]
+    diff_targets.sort(
+        key=lambda n: (n.get("author_date") or "", n.get("sha") or ""),
+        reverse=True,
+    )
+    stage_begin("分支 diff", len(diff_targets))
+    t_bdiff = make_throttle(1)
+    for i, node in enumerate(diff_targets, 1):
+        sha = node["sha"]
+        old = prev_graph_nodes.get(sha)
+        if old is not None and _node_has_diff(old):
+            # 命中缓存：整块复用，且**不计入预算**
+            node["files"] = old.get("files") or []
+            node["stats"] = old.get("stats") or {}
+            node["has_diff"] = True
+            n_bd_reuse += 1
+            if t_bdiff("分支 diff", i, len(diff_targets)):
+                progress("分支 diff", i, len(diff_targets), f"{short_sha(sha)}（缓存）")
+            continue
+        if n_bd_fetch >= branch_diff_budget:
+            n_bd_nodiff += 1
+            if t_bdiff("分支 diff", i, len(diff_targets)):
+                progress("分支 diff", i, len(diff_targets), f"{short_sha(sha)}（超出预算）")
+            continue
+        try:
+            raw_c, _ = http_get(f"{API}/repos/{repo}/commits/{sha}", token)
+            node["files"] = [map_file(f) for f in (raw_c.get("files") or [])]
+            node["stats"] = raw_c.get("stats") or {}
+            node["has_diff"] = True
+            n_bd_fetch += 1
+        except Exception as e:
+            log(f"  [warn] 分支 commit {short_sha(sha)} diff 失败: {e}")
+            n_bd_nodiff += 1
+        if t_bdiff("分支 diff", i, len(diff_targets)):
+            progress("分支 diff", i, len(diff_targets), short_sha(sha))
+    if not diff_targets:
+        progress("分支 diff", 0, 0, "无分支独有提交")
+
     graph = {
         "default_branch": default_branch,
         "refs": {"branches": graph_branches, "tags": graph_tags},
@@ -1999,11 +2059,19 @@ def export(args) -> Path:
     }
     meta["file_stats"]["graph_nodes"] = len(graph_nodes)
     meta["file_stats"]["graph_truncated"] = graph_truncated
+    meta["file_stats"]["branch_diffs"] = n_bd_fetch
+    meta["file_stats"]["branch_diffs_reused"] = n_bd_reuse
+    meta["file_stats"]["branch_diffs_skipped"] = n_bd_nodiff
     if not getattr(args, "no_branches", False):
         log(
             f"  graph: 节点 {len(graph_nodes)}（主干池 {len(main_pool)} 不重复存）, "
             f"refs 分支 {len(graph_branches)} / 标签 {len(graph_tags)}, truncated={graph_truncated}"
         )
+        if diff_targets:
+            log(
+                f"  分支 commit diff: 新拉 {n_bd_fetch}, 缓存复用 {n_bd_reuse}, "
+                f"未拉 {n_bd_nodiff}（预算 {branch_diff_budget}）"
+            )
 
     # --- write data JS (file:// 兼容) ---
     log("写出 data/*.js ...")
@@ -2057,6 +2125,8 @@ def main():
                     help="最多导出多少个分支（默认 100；0=全部）")
     ap.add_argument("--max-branch-commits", type=int, default=100,
                     help="每个分支最多保留多少条「独有提交」（默认 100；0=全部）")
+    ap.add_argument("--max-branch-diffs", type=int, default=30,
+                    help="本轮最多为多少条分支独有 commit 拉逐条 diff（默认 30；0=不拉）")
     ap.add_argument("--no-branches", action="store_true",
                     help="完全不导出分支数据（branches.js 写空数组，查看器自动降级）")
     ap.add_argument("--max-file-bytes", type=int, default=400_000)
