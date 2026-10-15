@@ -262,11 +262,13 @@ python export.py --repo owner/name --full   # 强制全量
 - `index.html` 固定按序加载 9 个 `data/*.js`，再加载 `js/app.js`；
 - `app.js` 从 `window.GH_DATA` 读数据，用内存 `state` 切换视图（无 hash 路由）；
 - 换页（侧栏 / 列表进详情 / 站内引用互跳）会把当前视图快照压入 `navHistory`；详情页顶部「← 返回」弹栈回到上一浏览页，栈空则清 detail 回当前列表；
-- 搜索、PR/Issue 过滤、文件树点选、compare 运行只重绘，不入导航历史；
+- 搜索、PR/Issue 过滤、Commit 页 ref 切换、文件树点选、compare 运行只重绘，不入导航历史；
 - 视图：`overview` / `prs` / `issues` / `commits` / `tags` / `branches` / `compare` / `files` / `readme`；
+- **提交总池**：`commitPool()` 把 主干（`commits.js`）→ graph 节点 → PR 内 commit（`prs[].commits_list`）→ Release compare 四者按 sha 去重合并（先命中者字段更全）。`findCommitAnywhere()` 查该池并容忍短 sha。Commit 详情、分支详情、正文 commit 链接全部走它，因此**分支独有提交与未合并 PR 的提交都能点开**（旧版只查 `commits.js`，点进去显示「未找到」）；
+- **Commit 页按 ref 查看**：`commitRefs()` 由 `graph.refs` 生成选项（默认分支排最前，标签在后）；`commitsForRef()` 从该 ref 的 tip 沿 `parents` 回溯得到可达提交（GitHub reachable 语义，带环状保护）。默认分支直接沿用 `commits.js` 顺序以保持旧观感；旧导出包无 `graph.js` 时不显示选择器，退回原来的平铺列表；
 - 概览含 GitHub 风格贡献墙：按日统计 Commit（`author_date`）、PR/Issue（`created_at`）、Release（`published_at`）、Tag（前端用同名 Release 日期或对应 commit 日期推断；无法定位则不进墙）。热力图横滑全历史，默认停在最右；色阶按当日总贡献的四分位（少量非零天时用固定阈值）。墙下汇总行可选 1 天 / 7 天 / 30 天 / 90 天 / 365 天 / 从最初 / 自定义天数，只影响汇总数字，不缩放热力图；变更后将墙滚回最右；
 - 详情页支持：PR 文件 diff、Issue 评论、Commit message 与文件、Release compare 摘要、文件树与已缓存文本源码；
-- 正文中的 `#123` 与同仓库 GitHub 链接会被改写为站内跳转。
+- 正文中的 `#123` 与同仓库 GitHub 链接会被改写为站内跳转；`/commit/<sha>` 链接是否改写取决于该 sha 是否在提交总池中（不再只认主干）。
 
 ## 5. data/*.js 数据格式
 

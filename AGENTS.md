@@ -25,6 +25,7 @@
 - 增量导出是默认行为：Commit 按 sha 无限累积、PR/Issue 按 `updated_at` 判断是否复用详情、文件内容与图片按 blob sha 判断变化；改增量逻辑时不得静默丢弃历史缓存。
 - 分支（branches）语义与其他数据相反：**分支列表是快照**，上游删掉的分支本包不再保留（只读镜像：GitHub 上删了就看不到了）；已抓到的 commit 节点仍在 `commits.js` 中累积。分支条目按 `sha` + `default_branch` 未变判断复用；tip 已包含于主干历史的分支（纯落后）**不发 compare 请求**，`behind_by` 本地按祖先集合计算，历史不完整时标 `behind_approx`。compare 的超限判断用 `total_commits > len(commits)`，不硬编码 API 上限。
 - 分支独有 commit 的逐条 diff 走 `--max-branch-diffs`（默认 30，0=不拉；`--skip-details` 强制为 0）：只为非 stub 节点拉取，按 `author_date` 新→旧排序以保证预算优先给最近提交；命中上一轮 `graph` 节点缓存的**不消耗预算**。预算耗尽后剩余节点只保留骨架（图上不断链），不报错。
+- 查看器查提交一律走 `commitPool()` / `findCommitAnywhere()`（主干 → graph → PR 内 → Release compare 按 sha 去重合并），**禁止再写只查 `D.commits` 的查找**：分支独有提交与未合并 PR 的提交不在 `commits.js` 里，只查主干会让它们点开报「未找到」。Commit 页的 ref 切换（`commitRefs` / `commitsForRef`）从 `graph.refs` 取选项、沿 `parents` 回溯（需带环状保护），无 `graph.js` 的旧包要退回平铺列表。
 - 二进制扩展名见 `export.BINARY_EXT`；单文件正文默认上限 400KB；图片下载上限 2MB（树内图与 PR/Issue/Release 正文外链图共用）。正文外链图落在 `assets/externals/`，URL→本地路径映射写在 `meta.image_map`。调整这些限制时同步更新 README 与 ARCHITECTURE。
 - 查看器 XSS 边界：所有从 GitHub 拉取的 HTML/文本在渲染前必须 `esc()` 或经受控的 `processRichHtml()`；禁止把未转义的 API 字段直接 `innerHTML`。
 - 修改或新增算法/数据结构前，必须先阅读 ARCHITECTURE.md，确认数据流和调用链。

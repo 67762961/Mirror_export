@@ -10,6 +10,7 @@
     prDetail: null,
     issueDetail: null,
     commitDetail: null,
+    commitRef: null,
     releaseDetail: null,
     branchDetail: null,
     search: "",
@@ -96,7 +97,9 @@
       .replace(
         new RegExp(`https?://github\\.com/${ownerName.replace("/", "\\/")}\/commit\\/(\\w{7,40})`, "gi"),
         (_, sha) => {
-          const known = (D.commits || []).some((c) => c.sha && (c.sha === sha || c.sha.startsWith(sha)));
+          // 合并池：主干 + 分支独有 + PR 内 + Release compare（原先只认主干，分支提交点不动）
+          const hit = findCommitAnywhere(sha);
+          const known = !!hit;
           return known
             ? `<a href="#commit-${sha}" class="issue-ref" data-commit-ref="${sha}" title="查看 commit"><code>${sha.slice(0, 7)}</code></a>`
             : `<code title="镜像中无此 commit 详情">${sha.slice(0, 7)}</code>`;
@@ -292,7 +295,8 @@
       s = s.replace(p.re, (m, g1) => {
         const href = p.to(m, g1);
         if (p.type === "commit") {
-          const known = (D.commits || []).some((c) => c.sha && (c.sha === g1 || String(c.sha).startsWith(g1)));
+          // 合并池：分支独有 / PR 内提交也能站内跳转
+          const known = !!findCommitAnywhere(g1);
           if (!known) return m;
           return href;
         }
@@ -774,12 +778,94 @@
     D.files.tree = D.files.tree || [];
     D.files.contents = D.files.contents || {};
     D.meta = D.meta || {};
+    commitPoolCache = null;
   }
 
   /* graph.js 的节点池（主干提交在 commits.js 里，这里只补非主干节点） */
   function findGraphNode(sha) {
     if (!sha) return null;
-    return (D.graph.nodes || []).find((n) => n.sha === sha) || null;
+    const nodes = (D.graph && D.graph.nodes) || [];
+    return nodes.find((n) => n.sha === sha) || null;
+  }
+
+  /* 提交总池：主干（含 diff）→ graph 节点（分支独有，含 diff）→ PR 内 commit → Release compare。
+     按此优先级先命中者字段更全，后两者只是「能点开」，通常没有 diff。 */
+  let commitPoolCache = null;
+  function commitPool() {
+    if (commitPoolCache) return commitPoolCache;
+    const map = new Map();
+    const add = (c) => { if (c && c.sha && !map.has(c.sha)) map.set(c.sha, c); };
+    (D.commits || []).forEach(add);
+    ((D.graph && D.graph.nodes) || []).forEach(add);
+    (D.prs || []).forEach((p) => (p.commits_list || []).forEach(add));
+    (D.releases || []).forEach((r) => (((r.compare || {}).commits) || []).forEach(add));
+    commitPoolCache = map;
+    return map;
+  }
+
+  /* 按 sha 找提交；精确值未命中时容忍短 sha（站内链接可能只给前 7 位） */
+  function findCommitAnywhere(sha) {
+    if (!sha) return null;
+    const pool = commitPool();
+    const s = String(sha);
+    if (pool.has(s)) return pool.get(s);
+    for (const [k, v] of pool) {
+      if (k.startsWith(s) || s.startsWith(k)) return v;
+    }
+    return null;
+  }
+
+  /* Commit 页的 ref 选项：分支（默认分支优先）+ 标签；旧包无 graph 时返回空 */
+  function commitRefs() {
+    const br = (D.graph && D.graph.refs && D.graph.refs.branches) || {};
+    const tg = (D.graph && D.graph.refs && D.graph.refs.tags) || {};
+    const def = (D.meta && D.meta.default_branch) || "";
+    const out = [];
+    Object.keys(br)
+      .sort((a, b) => {
+        if ((a === def) !== (b === def)) return a === def ? -1 : 1;
+        return a.localeCompare(b);
+      })
+      .forEach((n) => out.push({ type: "branch", name: n, sha: br[n], isDefault: n === def }));
+    Object.keys(tg).sort().forEach((n) => out.push({ type: "tag", name: n, sha: tg[n] }));
+    return out;
+  }
+
+  function refKey(r) { return r ? r.type + ":" + r.name : ""; }
+
+  function currentCommitRef() {
+    const refs = commitRefs();
+    if (!refs.length) return null;
+    return refs.find((r) => refKey(r) === state.commitRef) || refs[0];
+  }
+
+  function byDateDesc(a, b) {
+    const ka = a.author_date || a.committer_date || "";
+    const kb = b.author_date || b.committer_date || "";
+    if (ka !== kb) return ka < kb ? 1 : -1;
+    return String(b.sha || "").localeCompare(String(a.sha || ""));
+  }
+
+  /* 该 ref 可达的提交：从 tip 沿 parents 回溯（即 GitHub 的 reachable 语义） */
+  function commitsForRef(ref) {
+    if (!ref) return (D.commits || []).slice();
+    // 默认分支沿用 commits.js 的原始顺序，保证与旧版观感一致
+    if (ref.type === "branch" && ref.isDefault) return (D.commits || []).slice();
+    const pool = commitPool();
+    const seen = new Set();
+    const out = [];
+    const stack = [ref.sha];
+    while (stack.length) {
+      const sha = stack.pop();
+      if (!sha || seen.has(sha)) continue;
+      seen.add(sha);
+      const c = pool.get(sha);
+      if (!c) continue;
+      if (!c.stub) out.push(c);
+      (c.parents || []).forEach((p) => { if (p && !seen.has(p)) stack.push(p); });
+    }
+    out.sort(byDateDesc);
+    return out;
   }
 
   function findReadmePath() {
@@ -884,6 +970,7 @@
       prDetail: state.prDetail,
       issueDetail: state.issueDetail,
       commitDetail: state.commitDetail,
+      commitRef: state.commitRef,
       releaseDetail: state.releaseDetail,
       branchDetail: state.branchDetail,
       search: state.search,
@@ -900,6 +987,7 @@
     state.prDetail = snap.prDetail;
     state.issueDetail = snap.issueDetail;
     state.commitDetail = snap.commitDetail;
+    state.commitRef = snap.commitRef;
     state.releaseDetail = snap.releaseDetail;
     state.branchDetail = snap.branchDetail;
     state.search = snap.search;
@@ -1045,10 +1133,8 @@
     }
     const sha = tag.sha;
     if (sha) {
-      const c = (D.commits || []).find((x) => {
-        if (!x.sha) return false;
-        return x.sha === sha || String(sha).startsWith(String(x.sha)) || String(x.sha).startsWith(String(sha));
-      });
+      // 走合并池：标签可能指向分支独有提交（不在 commits.js 里）
+      const c = findCommitAnywhere(sha);
       if (c) {
         const k = dayKey(c.author_date || c.committer_date);
         if (k) return k;
@@ -1551,17 +1637,40 @@
   /* ---------- Commits ---------- */
   function renderCommits() {
     if (state.commitDetail) {
-      const c = D.commits.find((x) => x.sha === state.commitDetail);
+      const c = findCommitAnywhere(state.commitDetail);
       return c ? renderCommitDetail(c) : `<div class="empty">未找到 commit ${esc(shortSha(state.commitDetail))}</div>`;
     }
 
-    const list = D.commits.filter((c) => {
+    const refs = commitRefs();
+    const ref = currentCommitRef();
+    const all = commitsForRef(ref);
+    const list = all.filter((c) => {
       const hay = `${c.sha} ${c.message || ""} ${c.author_name || ""}`;
       return matchSearch(hay);
     });
+
+    // 只有存在 graph 引用表时才显示切换器（旧导出包自动隐藏）
+    const selector = refs.length
+      ? `<div class="filters">
+          <label class="small muted">查看</label>
+          <select id="commit-ref">
+            ${refs
+              .map((r) => `<option value="${esc(refKey(r))}"${ref && refKey(r) === refKey(ref) ? " selected" : ""}>${r.type === "branch" ? "分支" : "标签"} · ${esc(r.name)}${r.isDefault ? "（默认）" : ""}</option>`)
+              .join("")}
+          </select>
+        </div>`
+      : "";
+
+    const hint = ref
+      ? (ref.type === "branch" && ref.isDefault
+          ? `默认分支 ${esc(D.meta.default_branch || "")}`
+          : `${ref.type === "branch" ? "分支" : "标签"} ${esc(ref.name)} 可达的提交`)
+      : `默认分支 ${esc((D.meta && D.meta.default_branch) || "")}`;
+
     return `
       <h1 class="h1">Commits</h1>
-      <p class="muted small" style="margin-top:0">默认分支 ${esc(D.meta.default_branch || "")} · 最多 ${D.commits.length} 条 · 点击行查看文件变更</p>
+      <p class="muted small" style="margin-top:0">${hint} · 共 ${all.length} 条 · 点击行查看文件变更</p>
+      ${selector}
       <div class="count-line">显示 ${list.length} 条</div>
       <div class="list">
         ${list.map(commitRow).join("") || `<div class="empty">无匹配结果</div>`}
@@ -1913,7 +2022,7 @@
     const cmp = b.compare || {};
     const commits = cmp.commits || [];
     const files = cmp.files || [];
-    const known = (sha) => !!sha && (D.commits || []).some((c) => c.sha === sha);
+    const known = (sha) => !!findCommitAnywhere(sha);
     return `
       <button class="back-link" data-nav-back>← 返回</button>
       <div class="detail-hd">
@@ -2083,6 +2192,14 @@
         render();
       });
     });
+    // Commit 页 ref 切换：属于同页筛选，不入导航历史
+    const commitRefSel = $("#commit-ref");
+    if (commitRefSel) {
+      commitRefSel.addEventListener("change", () => {
+        state.commitRef = commitRefSel.value;
+        render();
+      });
+    }
     content.querySelectorAll("[data-issue-filter]").forEach((n) => {
       n.addEventListener("click", () => {
         state.issueFilter = n.dataset.issueFilter;
