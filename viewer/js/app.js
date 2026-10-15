@@ -815,7 +815,7 @@
     return null;
   }
 
-  /* Commit 页的 ref 选项：分支（默认分支优先）+ 标签；旧包无 graph 时返回空 */
+  /* Commit 页的 ref 选项：分支（默认分支优先）+ 标签（新→旧）；旧包无 graph 时返回空 */
   function commitRefs() {
     const br = (D.graph && D.graph.refs && D.graph.refs.branches) || {};
     const tg = (D.graph && D.graph.refs && D.graph.refs.tags) || {};
@@ -827,7 +827,22 @@
         return a.localeCompare(b);
       })
       .forEach((n) => out.push({ type: "branch", name: n, sha: br[n], isDefault: n === def }));
-    Object.keys(tg).sort().forEach((n) => out.push({ type: "tag", name: n, sha: tg[n] }));
+    // 标签按「指向的提交时间」新→旧排（与提交列表方向一致）；
+    // 取不到时间时（如指向未导出提交）排在最后，内部再按名字倒序，保证顺序稳定。
+    Object.keys(tg)
+      .map((n) => {
+        const c = findCommitAnywhere(tg[n]);
+        return {
+          name: n,
+          sha: tg[n],
+          date: (c && (c.author_date || c.committer_date)) || "",
+        };
+      })
+      .sort((a, b) => {
+        if (a.date !== b.date) return a.date < b.date ? 1 : -1;
+        return b.name.localeCompare(a.name);
+      })
+      .forEach((t) => out.push({ type: "tag", name: t.name, sha: t.sha }));
     return out;
   }
 
@@ -1995,6 +2010,78 @@
       </div>`;
   }
 
+  /* 泳道图：把 graph 节点 + 引用表交给 gitgraph.js 做纯布局，这里只拼 DOM。
+     graph.js 缺失（旧导出包）时不渲染图，只显示分支表。 */
+  function renderGitGraph() {
+    const G = window.GH_GRAPH;
+    // graph.js 只存非主干节点（省体积）；分支树要画出完整历史，
+    // 因此这里把主干（commits.js）与 graph 节点合并，主干优先（字段更全）。
+    const merged = [];
+    const seen = new Set();
+    (D.commits || []).forEach((c) => {
+      if (c && c.sha && !seen.has(c.sha)) { seen.add(c.sha); merged.push(c); }
+    });
+    ((D.graph && D.graph.nodes) || []).forEach((c) => {
+      if (c && c.sha && !seen.has(c.sha)) { seen.add(c.sha); merged.push(c); }
+    });
+    const nodes = merged;
+    if (!G || !nodes.length) return "";
+
+    const refs = (D.graph && D.graph.refs) || {};
+    let layout;
+    try {
+      layout = G.buildRows(nodes, {
+        branches: refs.branches || {},
+        tags: refs.tags || {},
+        defaultBranch: (D.meta && D.meta.default_branch) || (D.graph && D.graph.default_branch) || "",
+      }, { maxRows: 150 });
+    } catch (e) {
+      // 布局异常不应拖垮整页：退化为不显示图
+      return `<div class="warn-box">分支树渲染失败：${esc(e && e.message)}</div>`;
+    }
+    if (!layout.rowCount) return "";
+
+    const rows = layout.cells.map((cell) => {
+      // 分支标签跟随「该提交所在分支线」的颜色（与连线、圆点同色）；默认分支额外加绿环
+      const colorCls = "gg-c" + ((((cell.color | 0) % 8) + 8) % 8);
+      const refsHtml = cell.refs
+        .map((r) => r.type === "branch"
+          ? `<span class="gg-ref gg-ref-branch ${colorCls}${r.isDefault ? " gg-ref-default" : ""}" title="${r.isDefault ? "默认分支" : "分支"}">${esc(r.name)}</span>`
+          : `<span class="gg-ref gg-ref-tag" title="标签">${esc(r.name)}</span>`)
+        .join("");
+      const title = String(cell.message || "").split("\n")[0];
+      const known = !!findCommitAnywhere(cell.sha);
+      return `
+        <div class="gitgraph-row" ${known ? `data-commit="${esc(cell.sha)}"` : 'style="cursor:default"'}>
+          <div class="gitgraph-gutter">${G.cellSvg(cell)}</div>
+          <div class="gitgraph-main">
+            ${refsHtml}
+            <span class="gitgraph-msg">${esc(title) || (cell.stub ? "&lt;历史未导出&gt;" : "（无提交说明）")}</span>
+            <span class="gitgraph-meta">
+              <span class="sha" title="${esc(cell.sha)}">${shortSha(cell.sha)}</span>
+              ${cell.authorName ? `<span>${esc(cell.authorName)}</span>` : ""}
+              ${cell.authorDate ? `<span>${esc(fmtDate(cell.authorDate))}</span>` : ""}
+            </span>
+          </div>
+        </div>`;
+    }).join("");
+
+    return `
+      <div class="panel">
+        <div class="panel-hd">分支树${layout.truncated ? `（仅显示最近 ${layout.rowCount} / ${layout.totalNodes} 个提交）` : ""}${layout.overflow ? `（分支线较多，可横向滚动查看）` : ""}</div>
+        <div class="panel-bd gitgraph-body">
+          <div class="gitgraph">${rows}</div>
+          <div class="gitgraph-legend">
+            <span><span class="gg-dot-legend"></span> 提交</span>
+            <span><span class="gg-dot-legend gg-dot-legend-merge"></span> 合并提交</span>
+            <span><span class="gg-dot-legend gg-dot-legend-stub"></span> 历史未导出</span>
+            <span><span class="gg-ref gg-ref-branch gg-c0">分支</span> 分支</span>
+            <span><span class="gg-ref gg-ref-tag">标签</span> 标签</span>
+          </div>
+        </div>
+      </div>`;
+  }
+
   function renderBranches() {
     if (state.branchDetail) {
       const b = (D.branches || []).find((x) => x.name === state.branchDetail);
@@ -2013,6 +2100,7 @@
     return `
       <h1 class="h1">Branches</h1>
       <p class="muted small" style="margin-top:0">默认分支 ${esc((D.meta && D.meta.default_branch) || "—")} · 共 ${all.length} 个分支${hasCompare ? "" : " · 本次导出未包含与默认分支的差异统计"}</p>
+      ${renderGitGraph()}
       <div class="count-line">显示 ${list.length} 个</div>
       <div class="list">${list.map(branchRow).join("") || `<div class="empty">无分支数据（导出包可能未包含 branches.js）</div>`}</div>
     `;

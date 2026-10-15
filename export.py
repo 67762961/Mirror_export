@@ -1019,7 +1019,8 @@ IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico", ".bmp"}
 
 
 def copy_viewer(viewer_src: Path, out: Path) -> None:
-    for rel in ("index.html", "css/app.css", "js/app.js"):
+    # 新增 viewer 文件时必须登记到这里，否则导出包会缺文件、内网打开报错
+    for rel in ("index.html", "css/app.css", "js/app.js", "js/gitgraph.js"):
         src = viewer_src / rel
         if not src.exists():
             raise FileNotFoundError(f"缺少 viewer 文件: {src}")

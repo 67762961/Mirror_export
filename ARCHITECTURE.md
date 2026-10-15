@@ -47,9 +47,10 @@ Mirror_export/
 ├── export.py                      导出核心（CLI + 库）
 ├── app_gui.py                     图形界面入口
 ├── viewer/                        查看器模板（导出时复制到输出目录）
-│   ├── index.html                 壳页面，按序加载 data/*.js
+│   ├── index.html                 壳页面，按序加载 data/*.js 与 js/*.js
 │   ├── css/app.css                GitHub Light 风格样式
-│   └── js/app.js                  路由、列表、详情、diff、文件树
+│   ├── js/app.js                  路由、列表、详情、diff、文件树
+│   └── js/gitgraph.js             分支树泳道布局（纯函数，可 Node 单测）
 ├── preview/                       本地演示包（无 GitHub 时可打开）
 ├── sample/                        示例数据（结构同 preview/data）
 ├── data/                          开发/调试用数据样例
@@ -266,6 +267,13 @@ python export.py --repo owner/name --full   # 强制全量
 - 视图：`overview` / `prs` / `issues` / `commits` / `tags` / `branches` / `compare` / `files` / `readme`；
 - **提交总池**：`commitPool()` 把 主干（`commits.js`）→ graph 节点 → PR 内 commit（`prs[].commits_list`）→ Release compare 四者按 sha 去重合并（先命中者字段更全）。`findCommitAnywhere()` 查该池并容忍短 sha。Commit 详情、分支详情、正文 commit 链接全部走它，因此**分支独有提交与未合并 PR 的提交都能点开**（旧版只查 `commits.js`，点进去显示「未找到」）；
 - **Commit 页按 ref 查看**：`commitRefs()` 由 `graph.refs` 生成选项（默认分支排最前，标签在后）；`commitsForRef()` 从该 ref 的 tip 沿 `parents` 回溯得到可达提交（GitHub reachable 语义，带环状保护）。默认分支直接沿用 `commits.js` 顺序以保持旧观感；旧导出包无 `graph.js` 时不显示选择器，退回原来的平铺列表；
+- **分支页 Git Graph**：`js/gitgraph.js` 是纯函数模块（无 DOM 依赖，可在 Node 单测），负责拓扑排序与泳道分配；`app.js` 的 `renderGitGraph()` 只做 DOM 拼接。
+  - `topoOrder()`：Kahn 排序保证「子提交在父提交之前」，同级按 `author_date` 新→旧（`sha` 兜底稳定）；环或异常输入按日期补齐，**不死循环、不丢节点**；
+  - `buildRows()`：逐行分配泳道。**泳道会回收复用**——合并提交把分支收回时，紧接着的新分支优先复用刚腾出的泳道，因此「从主干拉出 → 合并回主干」这种最常见的 PR 模式**只占 1 条泳道宽度**，不会每合并一次就右扩一格（早期版本因排除「刚腾出的泳道」导致该问题）。合并提交的多个父各占一条泳道；尾部空闲泳道即时裁剪；所有行的 `laneCount` 统一为全局最大值，保证左侧留白一致；超过 `maxRows`（默认 150）截断并置 `truncated`；泳道数超过 `maxLanes`（默认 8）只置 `overflow` 提示**横向滚动**，不截断数据；
+  - **配色语义**（重要，改之前先读懂）：颜色跟着「分支线」走，**不跟泳道号**——同一泳道上下两行可能承载两条不同分支（上面收进来、下面放出去）。色号在**分支头（`graph.refs` 指向的提交）处切换**：一条线属于哪个分支，取决于它向下走时最近经过的分支头。于是「`next` 领先 `main` 且未合并」时，`next` 的独有提交是 next 的颜色，跨过 `main` 的 tip 后才变回主干色；而被合并回主干的 PR 分支始终保留自己的颜色。色号 **0 固定留给默认分支**，其余分支在 1..7 循环，避免与主干撞色；
+  - `cellSvg()`：输出单行 SVG，观感对齐 VSCode Git Graph——同泳道走直线、跨泳道走**三次贝塞尔曲线**；曲线在「圆点端」用水平切线、在「泳道端」用垂直切线，两段在圆点处自然接成**圆角肘**（控制点系数 `TANGENT_K = 0.5523`，即四分之一圆的三次贝塞尔逼近值；配合 `LANE_W≈ROW_H/2` 让水平跨距≈垂直跨距，曲线才够圆，跨距比越大越像折线）；线段与圆点按各自分支线着色（css 用 `.gg-c0..7` 的 `--gg-c` / `--gg-bg` 统一驱动连线、圆点、标签三者）；**合并提交**（有效父提交 ≥2）画更大的空心圆，普通提交画实心圆；`stub` 节点画空心虚线圆点，表示「历史未导出」；坐标统一收敛到 1 位小数；
+  - 行内为**单行紧凑布局**：`泳道 SVG | 引用标签 | 提交说明 | 短 sha · 作者 · 日期`；分支标签跟随其分支线配色（默认分支额外加绿环），标签用紫色+菱形标记区分。行高 `ROW_H`（26px）必须与 css `.gitgraph-row` 的 `height` 严格相等，且**分隔线必须用 `box-shadow` 而不是 `border`**：`border` 会占掉 1px 内容高度，使相邻行的 SVG 之间出现 1px 缝隙，竖线被逐行截断、看起来像虚线；
+  - 布局抛异常时只降级为一条提示，不拖垮整页；无 `graph.js` 的旧包不渲染图，仅显示分支表。
 - 概览含 GitHub 风格贡献墙：按日统计 Commit（`author_date`）、PR/Issue（`created_at`）、Release（`published_at`）、Tag（前端用同名 Release 日期或对应 commit 日期推断；无法定位则不进墙）。热力图横滑全历史，默认停在最右；色阶按当日总贡献的四分位（少量非零天时用固定阈值）。墙下汇总行可选 1 天 / 7 天 / 30 天 / 90 天 / 365 天 / 从最初 / 自定义天数，只影响汇总数字，不缩放热力图；变更后将墙滚回最右；
 - 详情页支持：PR 文件 diff、Issue 评论、Commit message 与文件、Release compare 摘要、文件树与已缓存文本源码；
 - 正文中的 `#123` 与同仓库 GitHub 链接会被改写为站内跳转；`/commit/<sha>` 链接是否改写取决于该 sha 是否在提交总池中（不再只认主干）。
@@ -342,7 +350,7 @@ window.GH_DATA=window.GH_DATA||{};window.GH_DATA.<name>=<compact-json>;
 
 - 源码运行：`python app_gui.py`（需本机 Tkinter）或 `python export.py ...`；
 - 打包 exe：PyInstaller 打包 `app_gui.py`，并把 `viewer/`、`export.py`、`assets` 图标一并打入；运行时 `sys.frozen` 为真，资源目录为 `_MEIPASS`；
-- `copy_viewer` 从 `app_root()/viewer` 复制到输出目录，缺文件会直接报错。
+- `copy_viewer` 从 `app_root()/viewer` 复制到输出目录，**按白名单逐文件复制**（`index.html` / `css/app.css` / `js/app.js` / `js/gitgraph.js`），缺文件会直接报错；新增 viewer 文件必须同步该白名单。
 
 ## 9. 实施约束
 
@@ -354,6 +362,7 @@ window.GH_DATA=window.GH_DATA||{};window.GH_DATA.<name>=<compact-json>;
    - 本文档与 README 的字段说明。
 2. 修改精简字段（`map_*`）时，检查查看器是否依赖被删字段；旧增量缓存可能仍含旧结构，读侧要兼容或提供一次性迁移。
 3. 查看器必须继续兼容 `file://`：禁止依赖 `fetch` 拉本地 JSON，必须使用 `data/*.js` 脚本注入。
+3.1 **新增 `viewer/` 下的文件时，必须同步 `export.copy_viewer()` 的白名单**（如 `js/gitgraph.js`），否则导出包缺文件、内网打开即报错；`build_exe.py` 用 `--add-data` 整目录打包 `viewer/`，无需改动。
 4. 新增 CLI 参数时：在 `export.main()` 注册、在 GUI `_collect_args` 映射（若 GUI 需要）、在 README/ARCHITECTURE 同步。
 5. 改 Token 缓存格式时，保持 `gh_token_cache.json` 可读、可清除，且永不进入导出输出目录；新增字段须给默认值，并保证旧版（v1 按 Token 平铺）能被 `_migrate_v1` 迁移，不得丢弃用户已存的 Token。
 6. 回归验证建议：
