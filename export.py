@@ -96,6 +96,21 @@ def _mark_stage(stage: str) -> None:
         _STAGE_DECLARED["max_idx"] = idx
 
 
+def reset_progress() -> None:
+    """重置本轮的进度状态，必须在每轮 export() 开头调用一次。
+
+    这三个状态是模块级全局，只在进程启动时初始化一次。GUI 里切换组合后再点导出，
+    是在**同一个进程**内第二次调用 export()，若不清零：
+    - `_LAST_OVERALL` 仍是上一轮的 100，单调保护 max() 会把新一轮首帧直接顶到 100%，
+      表现为「进度条从 0 一下冲到 100，导出其实在正常跑」；
+    - `_SEEN_STAGES` / `_STAGE_DECLARED` 仍是上一轮的值，跳过阶段（--no-assets /
+      --skip-details）的折算失效，`stage_n` 与实际执行阶段数对不上。
+    """
+    _SEEN_STAGES.clear()
+    _STAGE_DECLARED["max_idx"] = 0
+    _LAST_OVERALL["value"] = 0
+
+
 def progress(stage: str, done: int, total: int, note: str = "") -> None:
     """人类可读进度 + 供 GUI 解析的机器行。
 
@@ -1034,6 +1049,10 @@ def asset_rel(path: str) -> str:
 
 
 def export(args) -> Path:
+    # 每轮导出都必须重置进度状态：GUI 在同一进程内连续导出多个组合时，
+    # 上一轮遗留的 overall=100 会让新一轮首帧直接显示 100%（见 reset_progress）。
+    reset_progress()
+
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or ""
     if args.token:
         token = args.token

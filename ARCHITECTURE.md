@@ -210,6 +210,10 @@ python export.py --repo owner/name --full   # 强制全量
   出现在当前阶段之前、但本轮从未出现过的阶段视为跳过（`--no-assets` / `--skip-details`），
   其权重在分子与分母中一并剔除，`stage_idx` / `stage_n` 也按剔除后重新编号。
   `_LAST_OVERALL` 做单调保护，兜底保证百分比只增不减。
+- `_SEEN_STAGES` / `_STAGE_DECLARED` / `_LAST_OVERALL` 都是**单轮状态**（模块级全局，
+  进程启动时只初始化一次）。GUI 在同一进程内连续导出多个组合，因此 `export()` 开头
+  必须调用 `reset_progress()` 清零：否则上一轮遗留的 100% 会被单调保护带进新一轮，
+  首帧即显示 100%（切换组合后「进度条一下冲到 100」的已知 bug），跳过阶段的折算也会失效。
 - **命中缓存的条目也要计入 `done`**：PR / Issue / Commit / 图片在增量模式下大量复用缓存，
   若只在真正发起网络请求时上报，纯增量导出会出现进度条长时间不动。所有循环的上报点
   都放在 `continue` 之前。
