@@ -10,12 +10,23 @@
     prDetail: null,
     issueDetail: null,
     commitDetail: null,
+    commitRef: null,
+    // Commit 页：显示档位（150/300/600/0=全部）与当前显示条数（「加载更多」累加）
+    commitLimit: 150,
+    commitRows: 150,
     releaseDetail: null,
+    branchDetail: null,
+    // 分支树：显示档位（150/300/600/0=全部）与当前显示条数（「加载更多」累加）
+    graphLimit: 150,
+    graphRows: 150,
     search: "",
     filePath: null,
     showMdRaw: false,
     compareBase: null,
     compareHead: null,
+    // 版本对比结果列表：显示档位与当前条数（与分支树/Commit 页同一套模式）
+    compareLimit: 150,
+    compareRows: 150,
     rangeKey: "7",
     rangeCustomDays: 30,
   };
@@ -95,7 +106,9 @@
       .replace(
         new RegExp(`https?://github\\.com/${ownerName.replace("/", "\\/")}\/commit\\/(\\w{7,40})`, "gi"),
         (_, sha) => {
-          const known = (D.commits || []).some((c) => c.sha && (c.sha === sha || c.sha.startsWith(sha)));
+          // 合并池：主干 + 分支独有 + PR 内 + Release compare（原先只认主干，分支提交点不动）
+          const hit = findCommitAnywhere(sha);
+          const known = !!hit;
           return known
             ? `<a href="#commit-${sha}" class="issue-ref" data-commit-ref="${sha}" title="查看 commit"><code>${sha.slice(0, 7)}</code></a>`
             : `<code title="镜像中无此 commit 详情">${sha.slice(0, 7)}</code>`;
@@ -291,7 +304,8 @@
       s = s.replace(p.re, (m, g1) => {
         const href = p.to(m, g1);
         if (p.type === "commit") {
-          const known = (D.commits || []).some((c) => c.sha && (c.sha === g1 || String(c.sha).startsWith(g1)));
+          // 合并池：分支独有 / PR 内提交也能站内跳转
+          const known = !!findCommitAnywhere(g1);
           if (!known) return m;
           return href;
         }
@@ -763,10 +777,119 @@
     D.tags = D.tags || [];
     D.releases = D.releases || [];
     D.branches = D.branches || [];
+    // graph.js：提交池 + 引用表（旧导出包没有此文件，缺省即降级）
+    D.graph = D.graph || {};
+    D.graph.refs = D.graph.refs || {};
+    D.graph.refs.branches = D.graph.refs.branches || {};
+    D.graph.refs.tags = D.graph.refs.tags || {};
+    D.graph.nodes = D.graph.nodes || [];
     D.files = D.files || { tree: [], contents: {} };
     D.files.tree = D.files.tree || [];
     D.files.contents = D.files.contents || {};
     D.meta = D.meta || {};
+    commitPoolCache = null;
+  }
+
+  /* graph.js 的节点池（主干提交在 commits.js 里，这里只补非主干节点） */
+  function findGraphNode(sha) {
+    if (!sha) return null;
+    const nodes = (D.graph && D.graph.nodes) || [];
+    return nodes.find((n) => n.sha === sha) || null;
+  }
+
+  /* 提交总池：主干（含 diff）→ graph 节点（分支独有，含 diff）→ PR 内 commit → Release compare。
+     按此优先级先命中者字段更全，后两者只是「能点开」，通常没有 diff。 */
+  let commitPoolCache = null;
+  function commitPool() {
+    if (commitPoolCache) return commitPoolCache;
+    const map = new Map();
+    const add = (c) => { if (c && c.sha && !map.has(c.sha)) map.set(c.sha, c); };
+    (D.commits || []).forEach(add);
+    ((D.graph && D.graph.nodes) || []).forEach(add);
+    (D.prs || []).forEach((p) => (p.commits_list || []).forEach(add));
+    (D.releases || []).forEach((r) => (((r.compare || {}).commits) || []).forEach(add));
+    commitPoolCache = map;
+    return map;
+  }
+
+  /* 按 sha 找提交；精确值未命中时容忍短 sha（站内链接可能只给前 7 位） */
+  function findCommitAnywhere(sha) {
+    if (!sha) return null;
+    const pool = commitPool();
+    const s = String(sha);
+    if (pool.has(s)) return pool.get(s);
+    for (const [k, v] of pool) {
+      if (k.startsWith(s) || s.startsWith(k)) return v;
+    }
+    return null;
+  }
+
+  /* Commit 页的 ref 选项：分支（默认分支优先）+ 标签（新→旧）；旧包无 graph 时返回空 */
+  function commitRefs() {
+    const br = (D.graph && D.graph.refs && D.graph.refs.branches) || {};
+    const tg = (D.graph && D.graph.refs && D.graph.refs.tags) || {};
+    const def = (D.meta && D.meta.default_branch) || "";
+    const out = [];
+    Object.keys(br)
+      .sort((a, b) => {
+        if ((a === def) !== (b === def)) return a === def ? -1 : 1;
+        return a.localeCompare(b);
+      })
+      .forEach((n) => out.push({ type: "branch", name: n, sha: br[n], isDefault: n === def }));
+    // 标签按「指向的提交时间」新→旧排（与提交列表方向一致）；
+    // 取不到时间时（如指向未导出提交）排在最后，内部再按名字倒序，保证顺序稳定。
+    Object.keys(tg)
+      .map((n) => {
+        const c = findCommitAnywhere(tg[n]);
+        return {
+          name: n,
+          sha: tg[n],
+          date: (c && (c.author_date || c.committer_date)) || "",
+        };
+      })
+      .sort((a, b) => {
+        if (a.date !== b.date) return a.date < b.date ? 1 : -1;
+        return b.name.localeCompare(a.name);
+      })
+      .forEach((t) => out.push({ type: "tag", name: t.name, sha: t.sha }));
+    return out;
+  }
+
+  function refKey(r) { return r ? r.type + ":" + r.name : ""; }
+
+  function currentCommitRef() {
+    const refs = commitRefs();
+    if (!refs.length) return null;
+    return refs.find((r) => refKey(r) === state.commitRef) || refs[0];
+  }
+
+  function byDateDesc(a, b) {
+    const ka = a.author_date || a.committer_date || "";
+    const kb = b.author_date || b.committer_date || "";
+    if (ka !== kb) return ka < kb ? 1 : -1;
+    return String(b.sha || "").localeCompare(String(a.sha || ""));
+  }
+
+  /* 该 ref 可达的提交：从 tip 沿 parents 回溯（即 GitHub 的 reachable 语义） */
+  function commitsForRef(ref) {
+    if (!ref) return (D.commits || []).slice();
+    // 默认分支沿用 commits.js 的原始顺序，保证与旧版观感一致
+    if (ref.type === "branch" && ref.isDefault) return (D.commits || []).slice();
+    const pool = commitPool();
+    const seen = new Set();
+    const out = [];
+    const stack = [ref.sha];
+    while (stack.length) {
+      const sha = stack.pop();
+      if (!sha || seen.has(sha)) continue;
+      seen.add(sha);
+      const c = pool.get(sha);
+      if (!c) continue;
+      if (!c.stub) out.push(c);
+      (c.parents || []).forEach((p) => { if (p && !seen.has(p)) stack.push(p); });
+    }
+    out.sort(byDateDesc);
+    return out;
   }
 
   function findReadmePath() {
@@ -871,11 +994,19 @@
       prDetail: state.prDetail,
       issueDetail: state.issueDetail,
       commitDetail: state.commitDetail,
+      commitRef: state.commitRef,
+      commitLimit: state.commitLimit,
+      commitRows: state.commitRows,
       releaseDetail: state.releaseDetail,
+      branchDetail: state.branchDetail,
+      graphLimit: state.graphLimit,
+      graphRows: state.graphRows,
       search: state.search,
       filePath: state.filePath,
       compareBase: state.compareBase,
       compareHead: state.compareHead,
+      compareLimit: state.compareLimit,
+      compareRows: state.compareRows,
     };
   }
 
@@ -886,11 +1017,19 @@
     state.prDetail = snap.prDetail;
     state.issueDetail = snap.issueDetail;
     state.commitDetail = snap.commitDetail;
+    state.commitRef = snap.commitRef;
+    state.commitLimit = snap.commitLimit != null ? snap.commitLimit : 150;
+    state.commitRows = snap.commitRows != null ? snap.commitRows : 150;
     state.releaseDetail = snap.releaseDetail;
+    state.branchDetail = snap.branchDetail;
+    state.graphLimit = snap.graphLimit != null ? snap.graphLimit : 150;
+    state.graphRows = snap.graphRows != null ? snap.graphRows : 150;
     state.search = snap.search;
     state.filePath = snap.filePath;
     state.compareBase = snap.compareBase;
     state.compareHead = snap.compareHead;
+    state.compareLimit = snap.compareLimit != null ? snap.compareLimit : 150;
+    state.compareRows = snap.compareRows != null ? snap.compareRows : 150;
     state.showMdRaw = false;
   }
 
@@ -899,6 +1038,7 @@
     state.issueDetail = null;
     state.commitDetail = null;
     state.releaseDetail = null;
+    state.branchDetail = null;
     state.filePath = null;
   }
 
@@ -933,6 +1073,7 @@
     if (opts.issueDetail !== undefined) state.issueDetail = opts.issueDetail;
     if (opts.commitDetail !== undefined) state.commitDetail = opts.commitDetail;
     if (opts.releaseDetail !== undefined) state.releaseDetail = opts.releaseDetail;
+    if (opts.branchDetail !== undefined) state.branchDetail = opts.branchDetail;
     if (opts.filePath !== undefined) state.filePath = opts.filePath;
     $$(".nav-item").forEach((b) => b.classList.toggle("active", b.dataset.view === view));
     render();
@@ -980,7 +1121,7 @@
     const firstLine = (c.message || "").split("\n")[0];
     const nFiles = (c.files || []).length;
     return `
-      <div class="row" data-commit="${esc(c.sha)}">
+      <div class="row commit-row" data-commit="${esc(c.sha)}">
         <div class="row-main">
           <div class="row-title">${esc(firstLine)}</div>
           <div class="row-meta">
@@ -1028,10 +1169,8 @@
     }
     const sha = tag.sha;
     if (sha) {
-      const c = (D.commits || []).find((x) => {
-        if (!x.sha) return false;
-        return x.sha === sha || String(sha).startsWith(String(x.sha)) || String(x.sha).startsWith(String(sha));
-      });
+      // 走合并池：标签可能指向分支独有提交（不在 commits.js 里）
+      const c = findCommitAnywhere(sha);
       if (c) {
         const k = dayKey(c.author_date || c.committer_date);
         if (k) return k;
@@ -1303,11 +1442,10 @@
   /* ---------- overview ---------- */
   function renderOverview() {
     const m = D.meta;
-    const openIssues = D.issues.filter((i) => i.state === "open").length;
-    const merged = D.prs.filter((p) => p.merged).length;
 
-    const stat = (n, label, view, filter) =>
-      `<div class="stat stat-click" data-goto="${view}"${filter ? ` data-goto-filter="${filter}"` : ""} title="点击进入 ${esc(label)}">
+    // reset=true：点击后把该视图的筛选重置为「全部」，保证方块数字与列表条数一致
+    const stat = (n, label, view, filter, reset) =>
+      `<div class="stat stat-click" data-goto="${view}"${filter ? ` data-goto-filter="${filter}"` : ""}${reset ? ` data-goto-reset="1"` : ""} title="点击进入 ${esc(label)}">
         <div class="stat-n">${n}</div><div class="stat-l">${esc(label)}</div>
       </div>`;
 
@@ -1316,12 +1454,11 @@
       <p class="muted" style="margin-top:0">${esc(m.description || "（无描述）")}</p>
       ${m.private ? `<div class="warn-box">私有仓库只读镜像 · 导出于 ${esc(fmtDate(m.exported_at))}</div>` : ""}
       <div class="stats">
-        ${stat(D.prs.length, "Pull Requests", "prs")}
-        ${stat(merged, "Merged PR", "prs", "merged")}
-        ${stat(D.issues.length, "Issues", "issues")}
-        ${stat(openIssues, "Open Issue", "issues", "open")}
+        ${stat(D.prs.length, "Pull Requests", "prs", null, true)}
+        ${stat(D.issues.length, "Issues", "issues", null, true)}
         ${stat(D.commits.length, "Commits", "commits")}
         ${stat(D.tags.length, "Tags", "tags")}
+        ${stat(D.branches.length, "Branches", "branches")}
       </div>
       <div class="panel">
         <div class="panel-hd">仓库信息</div>
@@ -1536,21 +1673,72 @@
   /* ---------- Commits ---------- */
   function renderCommits() {
     if (state.commitDetail) {
-      const c = D.commits.find((x) => x.sha === state.commitDetail);
+      const c = findCommitAnywhere(state.commitDetail);
       return c ? renderCommitDetail(c) : `<div class="empty">未找到 commit ${esc(shortSha(state.commitDetail))}</div>`;
     }
 
-    const list = D.commits.filter((c) => {
+    const refs = commitRefs();
+    const ref = currentCommitRef();
+    const all = commitsForRef(ref);
+    const matched = all.filter((c) => {
       const hay = `${c.sha} ${c.message || ""} ${c.author_name || ""}`;
       return matchSearch(hay);
     });
+
+    // 搜索时跨全量匹配、不做截断（否则要翻很多页才找得到）；
+    // 无搜索时按档位截断，可点「加载更多」追加。
+    const searching = !!state.search;
+    const unlimited = !(state.commitRows > 0);
+    const list = (searching || unlimited) ? matched : matched.slice(0, state.commitRows);
+    const remain = (searching || unlimited) ? 0 : Math.max(0, matched.length - list.length);
+    const commitLimitOptions = [[150, "最近 150 条"], [300, "最近 300 条"], [600, "最近 600 条"], [0, "全部"]]
+      .map(([v, lab]) => `<option value="${v}"${state.commitLimit === v ? " selected" : ""}>${lab}</option>`)
+      .join("");
+
+    // 只有存在 graph 引用表时才显示切换器（旧导出包自动隐藏）
+    const selector = refs.length
+      ? `<div class="filters">
+          <label class="small muted">查看</label>
+          <select id="commit-ref">
+            ${refs
+              .map((r) => `<option value="${esc(refKey(r))}"${ref && refKey(r) === refKey(ref) ? " selected" : ""}>${r.type === "branch" ? "分支" : "标签"} · ${esc(r.name)}${r.isDefault ? "（默认）" : ""}</option>`)
+              .join("")}
+          </select>
+        </div>`
+      : "";
+
+    const hint = ref
+      ? (ref.type === "branch" && ref.isDefault
+          ? `默认分支 ${esc(D.meta.default_branch || "")}`
+          : `${ref.type === "branch" ? "分支" : "标签"} ${esc(ref.name)} 可达的提交`)
+      : `默认分支 ${esc((D.meta && D.meta.default_branch) || "")}`;
+
+    const toolbar = searching
+      ? ""
+      : `<div class="filters list-toolbar">
+           <label class="small muted">显示</label>
+           <select id="commit-limit" aria-label="显示条数">${commitLimitOptions}</select>
+           <span class="small muted">共 ${matched.length} 个提交${remain ? ` · 已显示最近 ${list.length} 条` : ""}</span>
+         </div>`;
+    const moreBtn = remain
+      ? `<div class="list-more">
+           <button class="btn" id="commit-more">加载更多（还有 ${remain} 条）</button>
+         </div>`
+      : "";
+    const countText = searching
+      ? `匹配 ${list.length} 条（跨全部 ${all.length} 条）`
+      : `显示 ${list.length} / ${matched.length} 条`;
+
     return `
       <h1 class="h1">Commits</h1>
-      <p class="muted small" style="margin-top:0">默认分支 ${esc(D.meta.default_branch || "")} · 最多 ${D.commits.length} 条 · 点击行查看文件变更</p>
-      <div class="count-line">显示 ${list.length} 条</div>
+      <p class="muted small" style="margin-top:0">${hint} · 共 ${all.length} 条 · 点击行查看文件变更</p>
+      ${selector}
+      ${toolbar}
+      <div class="count-line">${countText}</div>
       <div class="list">
         ${list.map(commitRow).join("") || `<div class="empty">无匹配结果</div>`}
       </div>
+      ${moreBtn}
     `;
   }
 
@@ -1707,50 +1895,170 @@
   }
 
   /* ---------- Compare ---------- */
-  function renderCompare() {
-    const names = D.tags.map((t) => t.name);
-    const opts = names.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
+  /* 该 ref 可达的提交 sha 集合（沿 parents 回溯），用于做集合差 */
+  function reachableSet(ref) {
+    const pool = commitPool();
+    const seen = new Set();
+    if (!ref || !ref.sha) return seen;
+    const stack = [ref.sha];
+    while (stack.length) {
+      const sha = stack.pop();
+      if (!sha || seen.has(sha)) continue;
+      seen.add(sha);
+      const c = pool.get(sha);
+      ((c && c.parents) || []).forEach((p) => { if (p && !seen.has(p)) stack.push(p); });
+    }
+    return seen;
+  }
 
-    let resultHtml = `<div class="empty">选择两个 Tag / 分支名，本地用已导出的 Commit 列表做近似对比。<br/>完整 diff 请在外网用导出脚本对特定 compare 拉取，或对照 PR 的文件变更。</div>`;
+  /* 对比可选的 ref：有 graph 时复用 commitRefs（分支默认优先、标签按时间新→旧）；
+     旧包没有 graph 时退化为纯 tag 列表。 */
+  function compareRefs() {
+    const g = D.graph && D.graph.refs;
+    const hasGraphRefs = !!g && (Object.keys(g.branches || {}).length || Object.keys(g.tags || {}).length);
+    if (hasGraphRefs) return commitRefs();
+    return (D.tags || []).map((t) => ({ type: "tag", name: t.name, sha: t.sha, isDefault: false }));
+  }
 
-    if (state.compareBase && state.compareHead && state.compareBase !== state.compareHead) {
-      const base = state.compareBase;
-      const head = state.compareHead;
-      const baseSha = (D.tags.find((t) => t.name === base) || {}).sha;
-      const headSha = (D.tags.find((t) => t.name === head) || {}).sha;
-      let slice = D.commits.slice();
-      const headIdx = headSha ? slice.findIndex((c) => c.sha === headSha) : 0;
-      const baseIdx = baseSha ? slice.findIndex((c) => c.sha === baseSha) : -1;
-      let between = [];
-      if (baseIdx >= 0 && headIdx >= 0) {
-        const [a, b] = headIdx < baseIdx ? [headIdx, baseIdx] : [baseIdx, headIdx];
-        between = slice.slice(a, b + 1);
-      } else if (baseIdx >= 0) {
-        between = slice.slice(0, baseIdx);
-      } else {
-        between = slice.slice(0, 30);
+  function findCompareRef(refs, key) {
+    return refs.find((r) => refKey(r) === key) || null;
+  }
+
+  /* 对比结果：head 相对 base 的独有提交 + 落后条数 + 分叉点。
+     用「可达集合差」而不是数组下标切片——后者对分支根本不成立
+     （分支的提交不在 commits.js 里，切片只能在主干上近似）。 */
+  function compareResult(baseRef, headRef) {
+    const pool = commitPool();
+    const baseSet = reachableSet(baseRef);
+    const headSet = reachableSet(headRef);
+    const headOnly = [];
+    const baseOnly = [];
+    headSet.forEach((sha) => {
+      if (baseSet.has(sha)) return;
+      const c = pool.get(sha);
+      if (c && !c.stub) headOnly.push(c);
+    });
+    baseSet.forEach((sha) => {
+      if (headSet.has(sha)) return;
+      const c = pool.get(sha);
+      if (c && !c.stub) baseOnly.push(c);
+    });
+    headOnly.sort(byDateDesc);
+    baseOnly.sort(byDateDesc);
+    // 分叉点：两端都可达的提交里最新的那个（近似 merge base）
+    let mergeBase = null;
+    let bestKey = null;
+    baseSet.forEach((sha) => {
+      if (!headSet.has(sha)) return;
+      const c = pool.get(sha);
+      const k = (c && (c.author_date || c.committer_date)) || "";
+      if (bestKey === null || k >= bestKey) { bestKey = k; mergeBase = sha; }
+    });
+    return { headOnly, baseOnly, mergeBase };
+  }
+
+  /* 导出时预计算好的文件差异：只在「方向完全一致」时可用；
+     方向相反时增删会对调，直接展示会误导，故不展示。 */
+  function precomputedFiles(baseRef, headRef) {
+    for (const b of (D.branches || [])) {
+      const cmp = b.compare || {};
+      if (!cmp.base || !b.name) continue;
+      if (cmp.base === baseRef.name && b.name === headRef.name) {
+        return { files: cmp.files || [], from: "导出时已缓存该分支与默认分支的对比" };
       }
+    }
+    for (const r of (D.releases || [])) {
+      const cmp = r.compare || {};
+      const tag = r.tag_name || r.name;
+      if (!cmp.base || !tag) continue;
+      if (cmp.base === baseRef.name && tag === headRef.name) {
+        return { files: cmp.files || [], from: "导出时已缓存该 Release 与上一 Tag 的对比" };
+      }
+    }
+    return null;
+  }
+
+  function renderCompare() {
+    const refs = compareRefs();
+    const label = (r) => (r.type === "branch" ? "分支 · " : "标签 · ") + r.name;
+    const optionHtml = (cur) => refs
+      .map((r) => `<option value="${esc(refKey(r))}"${cur && refKey(r) === refKey(cur) ? " selected" : ""}>${esc(label(r))}</option>`)
+      .join("");
+
+    // 默认：base = 默认分支，head = 最新 tag（无 tag 则取第一个非默认分支）
+    const defRef = refs.find((r) => r.type === "branch" && r.isDefault) || refs[0] || null;
+    const newestTag = refs.find((r) => r.type === "tag") || null;
+    const firstOther = refs.find((r) => !defRef || refKey(r) !== refKey(defRef)) || null;
+    const baseRef = findCompareRef(refs, state.compareBase) || defRef;
+    const headRef = findCompareRef(refs, state.compareHead) || newestTag || firstOther;
+
+    const selectors = refs.length
+      ? `<div class="filters">
+           <label class="small muted">base</label>
+           <select id="cmp-base">${optionHtml(baseRef)}</select>
+           <label class="small muted">head</label>
+           <select id="cmp-head">${optionHtml(headRef)}</select>
+           <button class="btn btn-primary" id="cmp-run">对比</button>
+         </div>`
+      : "";
+
+    let resultHtml = refs.length
+      ? `<div class="empty">选择 base → head 做本地对比。<br/>镜像里只有提交列表与「导出时预计算好的」文件差异，无法在内网现算任意两点的 diff。</div>`
+      : `<div class="empty">该导出包未包含分支 / 标签引用表（graph.js），无法对比。<br/>重新导出即可获得分支对比能力。</div>`;
+
+    if (refs.length && baseRef && headRef && refKey(baseRef) !== refKey(headRef)) {
+      const { headOnly, baseOnly, mergeBase } = compareResult(baseRef, headRef);
+      const unlimited = !(state.compareRows > 0);
+      const list = unlimited ? headOnly : headOnly.slice(0, state.compareRows);
+      const remain = unlimited ? 0 : Math.max(0, headOnly.length - list.length);
+      const pre = precomputedFiles(baseRef, headRef);
+
+      const fileBlock = pre
+        ? (pre.files.length
+            ? `<h2 class="h2">文件变更 (${pre.files.length})</h2>
+               <p class="muted small" style="margin-top:0">${esc(pre.from)}；为这两个 ref 的聚合差异</p>
+               ${pre.files.map(fileDiffHtml).join("")}`
+            : `<div class="panel"><div class="panel-hd">文件变更</div><div class="panel-bd"><div class="empty">导出时未缓存文件差异（可能加了 --skip-details）</div></div></div>`)
+        : `<p class="muted small" style="margin-top:0">文件变更：本地无法现算这两个 ref 的 diff，只能对比提交列表；逐文件变更请看分支详情页或 Release 详情页。</p>`;
+
+      const limitOptions = [[150, "最近 150 条"], [300, "最近 300 条"], [600, "最近 600 条"], [0, "全部"]]
+        .map(([v, lab]) => `<option value="${v}"${state.compareLimit === v ? " selected" : ""}>${lab}</option>`)
+        .join("");
+      const toolbar = headOnly.length > 150
+        ? `<div class="filters list-toolbar">
+             <label class="small muted">显示</label>
+             <select id="cmp-limit" aria-label="显示条数">${limitOptions}</select>
+             <span class="small muted">head 独有 ${headOnly.length} 个${remain ? ` · 已显示最近 ${list.length} 条` : ""}</span>
+           </div>`
+        : "";
+      const moreBtn = remain
+        ? `<div class="list-more"><button class="btn" id="cmp-more">加载更多（还有 ${remain} 条）</button></div>`
+        : "";
 
       resultHtml = `
-        <div class="warn-box">本地对比基于已导出的 ${D.commits.length} 条 commit，可能不完整。导出更全的 commit 历史可增大 --max-commits。</div>
         <div class="panel">
-          <div class="panel-hd">${esc(base)} … ${esc(head)} · 约 ${between.length} 个提交</div>
-          <div class="panel-bd" style="padding:0">
-            ${between.map(commitRow).join("") || `<div class="empty">未在镜像中找到这两个点之间的提交</div>`}
+          <div class="panel-hd">${esc(label(baseRef))} … ${esc(label(headRef))}</div>
+          <div class="panel-bd">
+            <div class="row-meta">
+              <span class="stat-add">head 领先 ${headOnly.length} 个提交</span>
+              <span class="stat-del">落后 ${baseOnly.length} 个提交</span>
+              ${mergeBase ? `<span>分叉点 <span class="sha">${shortSha(mergeBase)}</span></span>` : `<span class="small muted">未找到共同祖先（历史可能被截断）</span>`}
+            </div>
           </div>
-        </div>`;
+        </div>
+        ${toolbar}
+        <h2 class="h2">head 独有的提交 (${headOnly.length})</h2>
+        <div class="list" style="margin-bottom:18px">
+          ${list.map(commitRow).join("") || `<div class="empty">head 没有 base 之外的提交${baseOnly.length ? `（head 反而落后 base ${baseOnly.length} 个提交，可把 base / head 对调再看）` : ""}</div>`}
+        </div>
+        ${moreBtn}
+        ${fileBlock}`;
     }
 
     return `
       <h1 class="h1">版本对比</h1>
-      <p class="muted small" style="margin-top:0">选择 base → head，查看导出镜像中落在两者之间的 commit。</p>
-      <div class="filters">
-        <label class="small muted">base</label>
-        <select id="cmp-base">${opts}</select>
-        <label class="small muted">head</label>
-        <select id="cmp-head">${opts}</select>
-        <button class="btn btn-primary" id="cmp-run">对比</button>
-      </div>
+      <p class="muted small" style="margin-top:0">选择 base → head，查看 head 相对 base 的差异（提交级；文件差异仅在有缓存时显示）。</p>
+      ${selectors}
       ${resultHtml}
     `;
   }
@@ -1839,6 +2147,240 @@
     `;
   }
 
+  /* ---------- Branches ---------- */
+  function branchHeadSummary(b) {
+    const h = b.head || {};
+    const parts = [];
+    const msg = String(h.message || "").split("\n")[0];
+    if (msg) parts.push(esc(msg));
+    if (h.author_name) parts.push(esc(h.author_name));
+    if (h.author_date) parts.push(esc(fmtDate(h.author_date)));
+    return parts.join(" · ");
+  }
+
+  function branchRow(b) {
+    const cmp = b.compare || {};
+    const ahead = cmp.ahead_by;
+    const behind = cmp.behind_by;
+    const summary = branchHeadSummary(b);
+    return `
+      <div class="row" data-branch="${esc(b.name)}">
+        <div class="row-main">
+          <div class="row-title mono">${esc(b.name)}</div>
+          <div class="row-meta">
+            ${b.default ? `<span class="pill pill-green">默认分支</span>` : ""}
+            ${b.protected ? `<span class="pill">Protected</span>` : ""}
+            <span class="sha" title="${esc(b.sha || "")}">${shortSha(b.sha)}</span>
+            ${ahead != null ? `<span class="stat-add">领先 ${ahead}</span>` : ""}
+            ${behind != null ? `<span class="stat-del">落后 ${behind}</span>` : ""}
+            ${summary ? `<span>${summary}</span>` : ""}
+          </div>
+        </div>
+      </div>`;
+  }
+
+  /* 泳道图：把 graph 节点 + 引用表交给 gitgraph.js 做纯布局，这里只拼 DOM。
+     graph.js 缺失（旧导出包）时不渲染图，只显示分支表。 */
+  function renderGitGraph() {
+    const G = window.GH_GRAPH;
+    // graph.js 只存非主干节点（省体积）；分支树要画出完整历史，
+    // 因此这里把主干（commits.js）与 graph 节点合并，主干优先（字段更全）。
+    const merged = [];
+    const seen = new Set();
+    (D.commits || []).forEach((c) => {
+      if (c && c.sha && !seen.has(c.sha)) { seen.add(c.sha); merged.push(c); }
+    });
+    ((D.graph && D.graph.nodes) || []).forEach((c) => {
+      if (c && c.sha && !seen.has(c.sha)) { seen.add(c.sha); merged.push(c); }
+    });
+    const nodes = merged;
+    if (!G || !nodes.length) return "";
+
+    const refs = (D.graph && D.graph.refs) || {};
+    const layoutOpts = {
+      branches: refs.branches || {},
+      tags: refs.tags || {},
+      defaultBranch: (D.meta && D.meta.default_branch) || (D.graph && D.graph.default_branch) || "",
+    };
+    let layout;
+    try {
+      // 第一趟：全量布局，只为拿到「全局最大泳道数」。
+      // 必须在首屏就定好左侧宽度，否则「加载更多」后 maxLane 变大、已显示的行会整体右移。
+      // 实测 3000 节点全量布局仅约 2ms，可忽略。
+      const probe = G.buildRows(nodes, layoutOpts, { maxRows: 0 });
+      // 第二趟：按当前显示条数渲染，并强制用全局泳道数，保证宽度恒定
+      layout = G.buildRows(nodes, layoutOpts, {
+        maxRows: state.graphRows > 0 ? state.graphRows : 0,
+        laneCount: probe.laneCount,
+      });
+      layout.totalNodes = probe.totalNodes;
+      layout.allRows = probe.rowCount;
+    } catch (e) {
+      // 布局异常不应拖垮整页：退化为不显示图
+      return `<div class="warn-box">分支树渲染失败：${esc(e && e.message)}</div>`;
+    }
+    if (!layout.rowCount) return "";
+
+    const rows = layout.cells.map((cell) => {
+      // 分支标签跟随「该提交所在分支线」的颜色（与连线、圆点同色）；默认分支额外加绿环
+      const colorCls = "gg-c" + ((((cell.color | 0) % 8) + 8) % 8);
+      const refsHtml = cell.refs
+        .map((r) => r.type === "branch"
+          ? `<span class="gg-ref gg-ref-branch ${colorCls}${r.isDefault ? " gg-ref-default" : ""}" title="${r.isDefault ? "默认分支" : "分支"}">${esc(r.name)}</span>`
+          : `<span class="gg-ref gg-ref-tag" title="标签">${esc(r.name)}</span>`)
+        .join("");
+      const title = String(cell.message || "").split("\n")[0];
+      const known = !!findCommitAnywhere(cell.sha);
+      return `
+        <div class="gitgraph-row" ${known ? `data-commit="${esc(cell.sha)}"` : 'style="cursor:default"'}>
+          <div class="gitgraph-gutter">${G.cellSvg(cell)}</div>
+          <div class="gitgraph-main">
+            ${refsHtml}
+            <span class="gitgraph-msg">${esc(title) || (cell.stub ? "&lt;历史未导出&gt;" : "（无提交说明）")}</span>
+            <span class="gitgraph-meta">
+              <span class="sha" title="${esc(cell.sha)}">${shortSha(cell.sha)}</span>
+              ${cell.authorName ? `<span>${esc(cell.authorName)}</span>` : ""}
+              ${cell.authorDate ? `<span>${esc(fmtDate(cell.authorDate))}</span>` : ""}
+            </span>
+          </div>
+        </div>`;
+    }).join("");
+
+    const shown = layout.rowCount;
+    const total = layout.allRows != null ? layout.allRows : layout.totalNodes;
+    const remain = Math.max(0, total - shown);
+    const limitOptions = [[150, "最近 150 条"], [300, "最近 300 条"], [600, "最近 600 条"], [0, "全部"]]
+      .map(([v, lab]) => `<option value="${v}"${state.graphLimit === v ? " selected" : ""}>${lab}</option>`)
+      .join("");
+    const toolbar = `
+      <div class="filters gitgraph-toolbar">
+        <label class="small muted">显示</label>
+        <select id="graph-limit" aria-label="显示条数">${limitOptions}</select>
+        <span class="small muted">共 ${total} 个提交${remain ? ` · 已显示最近 ${shown} 条` : ""}</span>
+      </div>`;
+    const moreBtn = remain
+      ? `<div class="gitgraph-more">
+           <button class="btn" id="graph-more">加载更多（还有 ${remain} 条）</button>
+         </div>`
+      : "";
+
+    return `
+      <div class="panel">
+        <div class="panel-hd">分支树${layout.truncated ? `（仅显示最近 ${shown} / ${total} 个提交）` : ""}${layout.overflow ? `（分支线较多，可横向滚动查看）` : ""}</div>
+        <div class="panel-bd gitgraph-body">
+          ${toolbar}
+          <div class="gitgraph">${rows}</div>
+          ${moreBtn}
+          <div class="gitgraph-legend">
+            <span><span class="gg-dot-legend"></span> 提交</span>
+            <span><span class="gg-dot-legend gg-dot-legend-merge"></span> 合并提交</span>
+            <span><span class="gg-dot-legend gg-dot-legend-stub"></span> 历史未导出</span>
+            <span><span class="gg-ref gg-ref-branch gg-c0">分支</span> 分支</span>
+            <span><span class="gg-ref gg-ref-tag">标签</span> 标签</span>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  function renderBranches() {
+    if (state.branchDetail) {
+      const b = (D.branches || []).find((x) => x.name === state.branchDetail);
+      return b ? renderBranchDetail(b) : `<div class="empty">未找到分支 ${esc(state.branchDetail)}</div>`;
+    }
+
+    const all = (D.branches || []).slice();
+    const list = all
+      .filter((b) => matchSearch(`${b.name} ${b.sha || ""}`))
+      .sort((a, b) => {
+        if (!!a.default !== !!b.default) return a.default ? -1 : 1;
+        return String(a.name).localeCompare(String(b.name));
+      });
+    const hasCompare = all.some((b) => b.compare && b.compare.ahead_by != null);
+
+    return `
+      <h1 class="h1">Branches</h1>
+      <p class="muted small" style="margin-top:0">默认分支 ${esc((D.meta && D.meta.default_branch) || "—")} · 共 ${all.length} 个分支${hasCompare ? "" : " · 本次导出未包含与默认分支的差异统计"}</p>
+      ${renderGitGraph()}
+      <div class="count-line">显示 ${list.length} 个</div>
+      <div class="list">${list.map(branchRow).join("") || `<div class="empty">无分支数据（导出包可能未包含 branches.js）</div>`}</div>
+    `;
+  }
+
+  function renderBranchDetail(b) {
+    const cmp = b.compare || {};
+    const commits = cmp.commits || [];
+    const files = cmp.files || [];
+    const known = (sha) => !!findCommitAnywhere(sha);
+    return `
+      <button class="back-link" data-nav-back>← 返回</button>
+      <div class="detail-hd">
+        <div>
+          <h1 class="detail-title mono">${esc(b.name)}</h1>
+          <div class="detail-meta">
+            ${b.default ? `<span class="pill pill-green">默认分支</span>` : ""}
+            ${b.protected ? `<span class="pill">Protected</span>` : ""}
+            <span class="sha">${esc(b.sha || "")}</span>
+          </div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-hd">头部提交</div>
+        <div class="panel-bd">
+          ${b.head ? `
+            <div class="branch-head-msg">${esc(String(b.head.message || "").split("\n")[0] || "（无提交说明）")}</div>
+            <div class="row-meta">
+              <span>${esc(b.head.author_name || "—")}</span>
+              <span>${esc(fmtDate(b.head.author_date))}</span>
+              ${known(b.sha) ? `<span class="small muted">该提交在镜像中，可在 Commits 页查看</span>` : ""}
+            </div>` : `<div class="empty">本次导出未包含头部提交信息</div>`}
+        </div>
+      </div>
+      ${cmp.ahead_by != null || cmp.behind_by != null ? `
+        <div class="panel">
+          <div class="panel-hd">与默认分支的差异</div>
+          <div class="panel-bd">
+            <div class="row-meta">
+              <span class="stat-add">领先 ${cmp.ahead_by != null ? cmp.ahead_by : "—"} 个提交</span>
+              <span class="stat-del">落后 ${cmp.behind_by != null ? cmp.behind_by : "—"} 个提交</span>
+              ${cmp.merge_base ? `<span>分叉点 <span class="sha">${shortSha(cmp.merge_base)}</span></span>` : ""}
+              ${cmp.truncated ? `<span class="small muted">（提交列表已截断）</span>` : ""}
+            </div>
+          </div>
+        </div>` : ""}
+      ${commits.length ? `
+        <h2 class="h2">该分支独有的提交 (${commits.length})</h2>
+        <div class="list" style="margin-bottom:18px">
+          ${commits.map((c) => {
+            const node = findGraphNode(c.sha);
+            const cFiles = (node && node.files) || [];
+            const nFiles = cFiles.length;
+            return `
+            <div class="row" ${known(c.sha) ? `data-commit="${esc(c.sha)}"` : 'style="cursor:default"'}>
+              <div class="row-main">
+                <div class="row-title">${esc(String(c.message || "").split("\n")[0])}</div>
+                <div class="row-meta">
+                  <span class="sha" title="${esc(c.sha || "")}">${shortSha(c.sha)}</span>
+                  <span>${esc(c.author_name || (c.author && c.author.login) || "—")}</span>
+                  <span>${esc(fmtDate(c.author_date))}</span>
+                  ${nFiles ? `<span>${nFiles} 文件</span>` : ""}
+                  ${node && node.stats && node.stats.additions != null ? `<span class="stat-add">+${node.stats.additions}</span>` : ""}
+                  ${node && node.stats && node.stats.deletions != null ? `<span class="stat-del">-${node.stats.deletions}</span>` : ""}
+                </div>
+                ${nFiles ? `
+                  <details class="branch-commit-diff">
+                    <summary>查看文件变更 (${nFiles})</summary>
+                    ${cFiles.map(fileDiffHtml).join("")}
+                  </details>` : ""}
+              </div>
+            </div>`;
+          }).join("")}
+        </div>` : ""}
+      ${files.length ? `
+        <h2 class="h2">文件变更 (${files.length})</h2>
+        ${files.map(fileDiffHtml).join("")}` : ""}
+    `;
+  }
+
   /* ---------- main render ---------- */
   function render() {
     const el = $("#content");
@@ -1849,6 +2391,7 @@
       case "issues": html = renderIssues(); break;
       case "commits": html = renderCommits(); break;
       case "tags": html = renderTags(); break;
+      case "branches": html = renderBranches(); break;
       case "compare": html = renderCompare(); break;
       case "files": html = renderFiles(); break;
       case "readme": html = renderReadme(); break;
@@ -1925,6 +2468,9 @@
     content.querySelectorAll("[data-release]").forEach((n) => {
       n.addEventListener("click", () => setView("tags", { releaseDetail: n.dataset.release, clearDetails: true }));
     });
+    content.querySelectorAll("[data-branch]").forEach((n) => {
+      n.addEventListener("click", () => setView("branches", { branchDetail: n.dataset.branch, clearDetails: true }));
+    });
     content.querySelectorAll("[data-nav-back]").forEach((n) => {
       n.addEventListener("click", () => goBack());
     });
@@ -1934,6 +2480,54 @@
         render();
       });
     });
+    // Commit 页条数选择 / 加载更多：属于同页显示控制，不入导航历史
+    const commitLimitSel = $("#commit-limit");
+    if (commitLimitSel) {
+      commitLimitSel.addEventListener("change", () => {
+        const v = Number(commitLimitSel.value);
+        state.commitLimit = v;
+        state.commitRows = v > 0 ? v : 0; // 0 表示全部
+        render();
+      });
+    }
+    const commitMoreBtn = $("#commit-more");
+    if (commitMoreBtn) {
+      commitMoreBtn.addEventListener("click", () => {
+        state.commitRows = (state.commitRows > 0 ? state.commitRows : 0) + 150;
+        render();
+      });
+    }
+
+    // 分支树条数选择 / 加载更多：属于同页显示控制，不入导航历史
+    const graphLimitSel = $("#graph-limit");
+    if (graphLimitSel) {
+      graphLimitSel.addEventListener("change", () => {
+        const v = Number(graphLimitSel.value);
+        state.graphLimit = v;
+        // 切档位即重置显示条数：0 表示全部
+        state.graphRows = v > 0 ? v : 0;
+        render();
+      });
+    }
+    const graphMoreBtn = $("#graph-more");
+    if (graphMoreBtn) {
+      graphMoreBtn.addEventListener("click", () => {
+        // 每次追加一档（150）；若当前档位为「全部」则无按钮
+        state.graphRows = (state.graphRows > 0 ? state.graphRows : 0) + 150;
+        render();
+      });
+    }
+
+    // Commit 页 ref 切换：属于同页筛选，不入导航历史
+    const commitRefSel = $("#commit-ref");
+    if (commitRefSel) {
+      commitRefSel.addEventListener("change", () => {
+        state.commitRef = commitRefSel.value;
+        // 换 ref 相当于换一批提交：回到当前档位重新看
+        state.commitRows = state.commitLimit > 0 ? state.commitLimit : 0;
+        render();
+      });
+    }
     content.querySelectorAll("[data-issue-filter]").forEach((n) => {
       n.addEventListener("click", () => {
         state.issueFilter = n.dataset.issueFilter;
@@ -1991,9 +2585,11 @@
       n.addEventListener("click", () => {
         const view = n.dataset.goto;
         const filt = n.dataset.gotoFilter;
+        const reset = n.dataset.gotoReset;
         pushHistory();
-        if (view === "prs" && filt) state.prFilter = filt;
-        if (view === "issues" && filt) state.issueFilter = filt;
+        // 方块数字为总数，点击后筛选重置为「全部」，避免残留上次筛选导致条数对不上
+        if (view === "prs") state.prFilter = filt || (reset ? "all" : state.prFilter);
+        if (view === "issues") state.issueFilter = filt || (reset ? "all" : state.issueFilter);
         clearDetails();
         setView(view, { pushHistory: false });
       });
@@ -2019,17 +2615,32 @@
       customDays.addEventListener("change", applyCustomDays);
     }
 
+    // 版本对比：base/head 选择 + 结果列表的档位与加载更多（同页显示控制，不入导航历史）
     const cmpRun = $("#cmp-run");
     if (cmpRun) {
       const baseSel = $("#cmp-base");
       const headSel = $("#cmp-head");
-      if (baseSel && !state.compareBase) baseSel.value = D.tags[0] ? D.tags[0].name : "";
-      if (headSel && !state.compareHead) headSel.value = D.tags[1] ? D.tags[1].name : (D.tags[0] ? D.tags[0].name : "");
-      if (baseSel && state.compareBase) baseSel.value = state.compareBase;
-      if (headSel && state.compareHead) headSel.value = state.compareHead;
       cmpRun.addEventListener("click", () => {
         state.compareBase = baseSel.value;
         state.compareHead = headSel.value;
+        // 换对比目标相当于换一批提交：回到当前档位重新看
+        state.compareRows = state.compareLimit > 0 ? state.compareLimit : 0;
+        render();
+      });
+    }
+    const cmpLimitSel = $("#cmp-limit");
+    if (cmpLimitSel) {
+      cmpLimitSel.addEventListener("change", () => {
+        const v = Number(cmpLimitSel.value);
+        state.compareLimit = v;
+        state.compareRows = v > 0 ? v : 0;
+        render();
+      });
+    }
+    const cmpMoreBtn = $("#cmp-more");
+    if (cmpMoreBtn) {
+      cmpMoreBtn.addEventListener("click", () => {
+        state.compareRows = (state.compareRows > 0 ? state.compareRows : 0) + 150;
         render();
       });
     }
@@ -2047,6 +2658,7 @@
     $("#cnt-prs").textContent = String(D.prs.length);
     $("#cnt-issues").textContent = String(D.issues.length);
     $("#cnt-commits").textContent = String(D.commits.length);
+    $("#cnt-branches").textContent = String(D.branches.length);
 
     $("#topbar-meta").innerHTML = m.html_url
       ? `<span class="mono small">${esc(m.html_url)}</span>`

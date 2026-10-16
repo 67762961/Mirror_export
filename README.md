@@ -93,6 +93,9 @@ python export.py --repo 67762961/Csv_reader
 python export.py --repo 67762961/Csv_reader --out gh-mirror --force
 python export.py --repo 67762961/Csv_reader --max-prs 100 --max-commits 300
 python export.py --repo 67762961/Csv_reader --skip-details   # 只要列表，不要 diff，更快
+python export.py --repo 67762961/Csv_reader --max-branches 50   # 限制分支数（默认 100）
+python export.py --repo 67762961/Csv_reader --max-branch-diffs 0  # 不拉分支提交的逐条 diff
+python export.py --repo 67762961/Csv_reader --no-branches      # 完全不要分支数据
 ```
 
 CMD 用法：`set GITHUB_TOKEN=ghp_xxx` 再运行。
@@ -104,6 +107,7 @@ gh-mirror-67762961-Csv_reader-20260914/
   index.html
   css/app.css
   js/app.js
+  js/gitgraph.js     # 分支树泳道布局
   data/*.js
   assets/            # README 树内图片
   assets/externals/  # PR/Issue/Release 正文外链图片
@@ -115,7 +119,7 @@ gh-mirror-67762961-Csv_reader-20260914/
 
 1. 拷贝文件夹到内网任意位置
 2. 双击 `index.html`
-3. 左侧切换：概览 / PR / Issue / Commit / Tag / 版本对比 / 文件浏览
+3. 左侧切换：概览 / PR / Issue / Commit / Tag / Branch / 版本对比 / 文件浏览
 4. 详情页顶部「← 返回」回到上一个浏览页（如 PR → Commit 后返回 PR）；无更早历史时回对应列表
 
 > 数据以 `data/*.js` 加载，兼容 `file://` 协议，无需起本地服务器。
@@ -126,9 +130,10 @@ gh-mirror-67762961-Csv_reader-20260914/
 
 - **PR 列表**：筛选打开 / 已合并 / 已关闭，点进详情看描述、评论、文件 diff；正文 Markdown 图片若已导出则本地显示；详情内可点 commit / `#N` 等站内跳转，用「← 返回」回到上一浏览页
 - **Issue 列表**：同样支持筛选与详情评论；评论中的图片同样走 `image_map` 本地化
-- **Commit**：默认分支提交历史，含完整 message
+- **Commit**：默认显示默认分支的提交历史，含完整 message；顶部下拉可**切换分支 / 标签**，查看该 ref 可达的提交（像 GitHub 一样按分支看历史）。列表默认显示最近 150 条，可按 `150 / 300 / 600 / 全部` 切换档位，或点「加载更多」逐批追加；搜索时跨全部提交匹配、不受档位限制
 - **Tag / Release**：标签与发行说明；body 中的图片同样会被下载
-- **版本对比**：基于已导出 commit 的近似对比（选 base → head）
+- **Branch**：顶部是 **分支树（VSCode Git Graph 风格泳道图）**——彩色泳道、平滑曲线、合并提交用空心圆标出，分支与标签贴在对应提交上（虚线空心点表示「该提交不在镜像里」）；分支树默认显示最近 150 条，同样支持档位切换与「加载更多」，且**加载后左侧泳道宽度保持不变**；下方是分支清单（默认分支标记、protected、短 sha、头部提交摘要、与默认分支的领先/落后条数）；点进详情看该分支独有的提交与文件差异——每个独有提交可展开查看自己的 diff。**分支列表是快照**：上游删掉的分支，镜像里也不再保留（Github 上删了就看不到了，本项目是只读镜像，就该如此）；与 commit 的「无限累积」语义相反
+- **版本对比**：base / head 可选**分支或标签**，像 GitHub 一样看「head 相对 base 领先/落后多少、分叉点在哪、head 独有哪些提交」。默认是「默认分支 → 最新标签」。文件差异只在导出时预计算过的情况下显示（内网不能现算任意两点的 diff）：默认分支 ↔ 某分支用分支详情页缓存的那份，标签 ↔ 上一标签用 Release 缓存的那份；方向相反时不做展示（增删会对调）
 - **文件浏览**：默认分支文件树 + 已缓存的文本源码
 
 ## 限制（设计如此）

@@ -1128,3 +1128,226 @@ tr.hunk td {
   color: var(--text-muted);
   margin-bottom: 10px;
 }
+
+/* ---- Branches ---- */
+.branch-head-msg {
+  font-weight: 600;
+  word-break: break-word;
+  margin-bottom: 4px;
+}
+.branch-commit-diff {
+  margin-top: 6px;
+}
+.branch-commit-diff > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--accent);
+  user-select: none;
+}
+.branch-commit-diff > summary:hover { text-decoration: underline; }
+.branch-commit-diff .file-block:first-of-type { margin-top: 8px; }
+
+/* ---- Branch graph（泳道图，观感对齐 VSCode Git Graph）---- */
+.pill-blue { color: var(--accent); border-color: rgba(9,105,218,.4); background: var(--accent-soft); }
+
+.gitgraph-body { padding: 0; }
+.gitgraph {
+  overflow-x: auto;
+  font-size: 12px;
+}
+/* 分支树工具条：显示档位选择 + 条数说明（复用 .filters 的排版） */
+.gitgraph-toolbar {
+  padding: 10px 14px 0;
+  margin-bottom: 8px;
+}
+.gitgraph-more {
+  padding: 10px 14px 12px;
+  text-align: center;
+  border-top: 1px solid var(--border-muted);
+  background: var(--bg);
+}
+
+/* 通用列表工具条 / 加载更多（分支树与 Commit 页共用） */
+.list-toolbar {
+  padding: 0 0 10px;
+  margin-bottom: 0;
+}
+.list-more {
+  padding: 12px 0 4px;
+  text-align: center;
+}
+/* Commit 列表行：视口外跳过渲染（长列表性能瓶颈在 DOM 不在布局）。
+   contain-intrinsic-size 必给，否则浏览器不知道离屏行高、滚动条会乱跳。
+   不支持的浏览器自动忽略，不影响功能。 */
+.commit-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 40px;
+}
+.gitgraph-row {
+  display: flex;
+  align-items: center;
+  /* 必须等于 gitgraph.js 的 ROW_H：行高被内容撑高会让相邻行的 SVG 之间出现缝隙，
+     竖线被逐行截断、看起来像虚线。
+     分隔线用 box-shadow 而非 border：border 会占掉 1px 内容高度，
+     导致 SVG 溢出或行间留缝（两种都会让竖线断开）。 */
+  height: 26px;
+  box-shadow: inset 0 -1px 0 var(--border-muted);
+  /* 视口外的行跳过渲染：行数上千时能显著降低首屏解析/回流开销。
+     contain-intrinsic-size 必须给，否则浏览器不知道视口外行的高度、滚动条会乱跳。
+     不支持的浏览器自动忽略这两条，不影响功能。 */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 26px;
+  cursor: pointer;
+  transition: background 0.1s ease;
+}
+.gitgraph-row:last-child { box-shadow: none; }
+.gitgraph-row:hover { background: rgba(208, 215, 222, 0.35); }
+.gitgraph-row:hover .gitgraph-msg { color: var(--accent); }
+
+.gitgraph-gutter {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  padding-left: 10px;
+}
+.gitgraph-svg { display: block; }
+
+/* 分支线配色：8 色循环。颜色跟着「分支线」走而不是「泳道号」，
+   因为同一泳道上下两行可能承载两条不同分支（上面收进来、下面放出去）。
+   色号 0 固定留给默认分支（主干），其余分支在 1..7 循环，避免与主干撞色。
+   用自定义属性统一驱动「连线 / 圆点 / 标签」三者，避免三处各写一遍。 */
+.gg-c0 { --gg-c: #0969da; --gg-bg: rgba(9, 105, 218, 0.12); }
+.gg-c1 { --gg-c: #8250df; --gg-bg: rgba(130, 80, 223, 0.12); }
+.gg-c2 { --gg-c: #1a7f37; --gg-bg: rgba(26, 127, 55, 0.12); }
+.gg-c3 { --gg-c: #bc4c00; --gg-bg: rgba(188, 76, 0, 0.12); }
+.gg-c4 { --gg-c: #cf222e; --gg-bg: rgba(207, 34, 46, 0.10); }
+.gg-c5 { --gg-c: #0a7ea4; --gg-bg: rgba(10, 126, 164, 0.12); }
+.gg-c6 { --gg-c: #953800; --gg-bg: rgba(149, 56, 0, 0.12); }
+.gg-c7 { --gg-c: #6e7781; --gg-bg: rgba(110, 119, 129, 0.14); }
+
+.gg-lines path {
+  fill: none;
+  stroke: var(--border);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+/* 连线与圆点取所在分支线颜色；[class*=] 只命中 path/circle（标签是 span，另有规则） */
+path[class*="gg-c"] { stroke: var(--gg-c); }
+circle[class*="gg-c"] { fill: var(--gg-c); }
+
+.gg-dot { stroke: var(--bg-subtle); stroke-width: 1.5; }
+/* 合并提交：白心 + 粗彩边，视觉上比普通提交更重 */
+circle.gg-dot-merge {
+  fill: var(--bg);
+  stroke: var(--gg-c);
+  stroke-width: 2.5;
+}
+/* 历史未导出的占位节点：空心虚线灰点 */
+circle.gg-dot-stub {
+  fill: var(--bg);
+  stroke: var(--text-faint);
+  stroke-width: 1.5;
+  stroke-dasharray: 2 2;
+}
+
+/* 引用标签：分支用泳道色描边+浅底，标签（tag）用灰底+小图标区分 */
+.gg-ref {
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 16px;
+  padding: 0 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  background: var(--bg);
+  white-space: nowrap;
+}
+span.gg-ref-branch {
+  color: var(--gg-c);
+  border-color: var(--gg-c);
+  background: var(--gg-bg);
+  font-weight: 600;
+}
+span.gg-ref-tag {
+  color: var(--purple);
+  border-color: rgba(130, 80, 223, 0.4);
+  background: var(--purple-soft);
+}
+/* 标签用一个小菱形与分支区分（不用字形图标，避免字体差异导致显示不一致） */
+span.gg-ref-tag::before {
+  content: "";
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-right: 4px;
+  vertical-align: middle;
+  background: currentColor;
+  transform: rotate(45deg);
+  border-radius: 1px;
+}
+span.gg-ref-default { box-shadow: 0 0 0 2px var(--green-soft); }
+
+.gg-dot-legend {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  vertical-align: middle;
+  margin-right: 4px;
+  background: var(--text-faint);
+}
+.gg-dot-legend-merge {
+  background: var(--bg);
+  border: 2px solid var(--text-faint);
+  width: 7px;
+  height: 7px;
+}
+.gg-dot-legend-stub {
+  background: var(--bg);
+  border: 1px dashed var(--text-faint);
+}
+
+.gitgraph-main {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 12px 3px 6px;
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 6px;
+}
+.gitgraph-msg {
+  font-weight: 600;
+  color: var(--text);
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gitgraph-meta {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+  align-items: center;
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.gg-stub-hint { font-style: italic; }
+
+.gitgraph-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: center;
+  padding: 8px 14px 12px;
+  color: var(--text-muted);
+  font-size: 11px;
+  border-top: 1px solid var(--border-muted);
+  background: var(--bg);
+}
+.gitgraph-legend .gg-ref { font-family: inherit; }
+.gitgraph-legend > span { display: inline-flex; align-items: center; gap: 4px; }

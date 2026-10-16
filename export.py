@@ -70,6 +70,8 @@ STAGES = [
     ("仓库图片", 12),
     ("正文图片", 5),
     ("Branches", 1),
+    ("分支对比", 3),
+    ("分支 diff", 3),
     ("写出数据", 1),
 ]
 
@@ -405,7 +407,7 @@ def load_previous_export(out: Path) -> dict:
     prev: dict = {}
     if not data_dir.is_dir():
         return prev
-    for name in ("meta", "prs", "issues", "commits", "tags", "releases", "files", "branches"):
+    for name in ("meta", "prs", "issues", "commits", "tags", "releases", "files", "branches", "graph"):
         p = data_dir / f"{name}.js"
         if p.exists():
             val = parse_data_js(p, name)
@@ -1017,7 +1019,8 @@ IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico", ".bmp"}
 
 
 def copy_viewer(viewer_src: Path, out: Path) -> None:
-    for rel in ("index.html", "css/app.css", "js/app.js"):
+    # 新增 viewer 文件时必须登记到这里，否则导出包会缺文件、内网打开报错
+    for rel in ("index.html", "css/app.css", "js/app.js", "js/gitgraph.js"):
         src = viewer_src / rel
         if not src.exists():
             raise FileNotFoundError(f"缺少 viewer 文件: {src}")
@@ -1101,6 +1104,7 @@ def export(args) -> Path:
             "prs": args.max_prs,
             "issues": args.max_issues,
             "commits": args.max_commits,
+            "branches": getattr(args, "max_branches", 100),
             "file_bytes": args.max_file_bytes,
         },
     }
@@ -1643,6 +1647,10 @@ def export(args) -> Path:
         "contents_reused": text_reuse,
         "skipped": skipped,
         "tree_truncated": truncated,
+        # branches 段稍后填充；先给默认值，保证 --no-branches 时字段仍存在
+        "branches": 0,
+        "branches_api": 0,
+        "branches_reused": 0,
     }
 
     # --- download images (增量按 blob sha) + 正文外链图片 ---
@@ -1695,22 +1703,376 @@ def export(args) -> Path:
         meta["file_stats"]["body_images_failed"] = 0
         meta["image_map"] = {}
 
-    # --- branches (轻量，用于筛选) ---
-    stage_begin("Branches")
-    log("拉取 branches ...")
-    try:
-        raw_branches = paginate(f"{API}/repos/{repo}/branches", token, 50, "branches")
-        branches = [
-            {
-                "name": b.get("name"),
-                "sha": (b.get("commit") or {}).get("sha"),
-                "protected": b.get("protected"),
+    # --- branches（清单 + 头部提交摘要 + 与默认分支的对比） ---
+    # 只读镜像语义：分支列表是「快照」，上游删掉的分支本包不再保留（与 commit 的无限累积相反）。
+    # 为省配额：tip 已落在主干历史里的分支（纯落后）不发请求，直接 0 次 API 得到结果。
+    branches = []
+    if getattr(args, "no_branches", False):
+        stage_begin("Branches")
+        log("跳过 branches（--no-branches）")
+    else:
+        stage_begin("Branches")
+        log("拉取 branches ...")
+        try:
+            raw_branches = paginate(
+                f"{API}/repos/{repo}/branches",
+                token,
+                getattr(args, "max_branches", 100),
+                "branches",
+            )
+        except Exception as e:
+            log(f"  [warn] branches 失败: {e}")
+            raw_branches = []
+
+        prev_branches = {
+            b.get("name"): b for b in (prev.get("branches") or []) if b.get("name")
+        }
+        # 主干 tip：优先取本轮 API 窗口第一条（最新），否则用默认分支的分支条目
+        main_tip = None
+        for c in raw_commits:
+            if c.get("sha"):
+                main_tip = c.get("sha")
+                break
+        if not main_tip:
+            for b in raw_branches:
+                if b.get("name") == default_branch:
+                    main_tip = (b.get("commit") or {}).get("sha")
+                    break
+        # sha -> commit 摘要（主干历史，用于零请求补头部信息）
+        commit_by_sha = {}
+        for c in commits:
+            if c.get("sha"):
+                commit_by_sha[c["sha"]] = c
+        for sha, c in prev_commits.items():
+            commit_by_sha.setdefault(sha, c)
+        # sha -> parents（本地兜底用）
+        parents_map = {}
+        for c in commits:
+            if c.get("sha"):
+                parents_map[c["sha"]] = [p for p in (c.get("parents") or []) if p]
+        for sha, c in prev_commits.items():
+            parents_map.setdefault(sha, [p for p in (c.get("parents") or []) if p])
+        # 主干 tip 的祖先集合（判断分支 tip 是否已包含于主干），以及已知历史是否完整
+        def ancestors_of(start):
+            seen = set()
+            if not start:
+                return seen
+            stack = [start]
+            while stack:
+                cur = stack.pop()
+                if cur in seen:
+                    continue
+                seen.add(cur)
+                stack.extend(parents_map.get(cur, []))
+            return seen
+
+        main_ancestors = ancestors_of(main_tip)
+        # 已知图闭合（每个已知 commit 的 parents 都在图内）才说明走到了根，
+        # 否则本地算出的「落后条数」只是下界，需在数据里标明 approx。
+        history_complete = not any(
+            p not in parents_map
+            for ps in parents_map.values()
+            for p in ps
+        )
+
+        stage_begin("分支对比", len(raw_branches))
+        t_branch = make_throttle(1)
+        n_branch_reuse = 0
+        n_branch_api = 0
+        n_branch_contained = 0
+        max_branch_commits = int(getattr(args, "max_branch_commits", 100) or 0)
+
+        for i, rb in enumerate(raw_branches, 1):
+            name = rb.get("name")
+            sha = (rb.get("commit") or {}).get("sha")
+            if not name:
+                continue
+            entry = {
+                "name": name,
+                "sha": sha,
+                "protected": bool(rb.get("protected")),
+                "default": name == default_branch,
+                # 增量判据：compare 的 ahead/behind 依赖默认分支，改名后必须重拉。
+                # 必须在此处就写好，否则 reuse / contained 两条 continue 路径会漏掉它。
+                "default_branch": default_branch,
             }
-            for b in raw_branches
-        ]
-    except Exception as e:
-        log(f"  [warn] branches 失败: {e}")
-        branches = []
+
+            # 增量：sha 与默认分支都未变且上轮已有 compare/head → 整条复用
+            old = prev_branches.get(name) if incremental else None
+            if (
+                old
+                and old.get("sha") == sha
+                and old.get("compare") is not None
+                and old.get("head") is not None
+                and old.get("default_branch") == default_branch
+                and old.get("compare", {}).get("base") == default_branch
+            ):
+                entry["head"] = old.get("head")
+                entry["compare"] = old.get("compare")
+                n_branch_reuse += 1
+                branches.append(entry)
+                if t_branch("分支对比", i, len(raw_branches)):
+                    progress("分支对比", i, len(raw_branches), f"{name}（缓存）")
+                continue
+
+            # 头部提交摘要：能从本地 commit 池拿到就不发请求
+            head = None
+            local = commit_by_sha.get(sha)
+            if local:
+                head = {
+                    "message": local.get("message") or "",
+                    "author_name": local.get("author_name"),
+                    "author_date": local.get("author_date"),
+                }
+
+            # 分支 tip 已包含于主干（纯落后）：0 次 API，本地算 ahead/behind
+            if sha and sha in main_ancestors:
+                n_branch_contained += 1
+                entry["head"] = head or (old or {}).get("head")
+                same_tip = bool(main_tip) and sha == main_tip
+                if same_tip:
+                    # 与主干同一提交：既没领先也没落后
+                    ahead, behind, status = 0, 0, "identical"
+                else:
+                    # 落后 = 主干可达但该分支不可达的提交数（有完整历史时精确，否则为下界）
+                    ahead = 0
+                    behind = len(main_ancestors - ancestors_of(sha))
+                    status = "behind"
+                cmp_block = {
+                    "base": default_branch,
+                    "ahead_by": ahead,
+                    "behind_by": behind,
+                    "status": status,
+                    "merge_base": sha,
+                    "commits": [],
+                    "files": [],
+                    "truncated": False,
+                }
+                # 历史不完整时 behind 只是下界，明确标注，避免内网误读为精确值
+                if not history_complete and not same_tip:
+                    cmp_block["behind_approx"] = True
+                entry["compare"] = cmp_block
+                branches.append(entry)
+                if t_branch("分支对比", i, len(raw_branches)):
+                    progress("分支对比", i, len(raw_branches), f"{name}（已包含于主干）")
+                continue
+
+            # 需要一次 compare：{主干tip}...{分支tip}
+            # --skip-details 仍拉 ahead/behind/commits 骨架，只跳过 files（决策 a）
+            cmp_block = None
+            if main_tip and sha and main_tip != sha:
+                try:
+                    cmp_url = (
+                        f"{API}/repos/{repo}/compare/"
+                        f"{urllib.parse.quote(main_tip)}...{urllib.parse.quote(sha)}"
+                    )
+                    raw_cmp, _ = http_get(cmp_url, token)
+                    n_branch_api += 1
+                    c_commits = raw_cmp.get("commits") or []
+                    total = raw_cmp.get("total_commits")
+                    if total is None:
+                        total = len(c_commits)
+                    keep = c_commits[:max_branch_commits] if max_branch_commits > 0 else c_commits
+                    cmp_block = {
+                        "base": default_branch,
+                        "ahead_by": raw_cmp.get("ahead_by"),
+                        "behind_by": raw_cmp.get("behind_by"),
+                        "status": raw_cmp.get("status"),
+                        "merge_base": (raw_cmp.get("merge_base_commit") or {}).get("sha"),
+                        "total_commits": total,
+                        # 只保留列表展示所需字段（与 release compare 同一裁剪口径）
+                        "commits": [
+                            {
+                                "sha": c.get("sha"),
+                                "message": (c.get("commit") or {}).get("message") or "",
+                                "author_name": ((c.get("commit") or {}).get("author") or {}).get("name"),
+                                "author_date": ((c.get("commit") or {}).get("author") or {}).get("date"),
+                                "author": slim_user(c.get("author")),
+                                "parents": [p.get("sha") for p in (c.get("parents") or [])],
+                            }
+                            for c in keep
+                        ],
+                        # 超限兜底：compare 单次返回有上限，total > 实际返回即视为截断
+                        "truncated": bool(total and total > len(c_commits)),
+                        "files": [] if args.skip_details else [map_file(f) for f in (raw_cmp.get("files") or [])],
+                    }
+                    if not head and cmp_block["commits"]:
+                        tip_c = next(
+                            (c for c in cmp_block["commits"] if c.get("sha") == sha),
+                            cmp_block["commits"][-1],
+                        )
+                        head = {
+                            "message": tip_c.get("message") or "",
+                            "author_name": tip_c.get("author_name"),
+                            "author_date": tip_c.get("author_date"),
+                        }
+                except Exception as e:
+                    log(f"  [warn] compare {default_branch}...{name} 失败: {e}")
+                    cmp_block = {"base": default_branch, "error": str(e)}
+            else:
+                # 无法对比（无主干 tip / 与主干同一提交）：保留旧块或写空骨架
+                cmp_block = (old or {}).get("compare") or {
+                    "base": default_branch, "ahead_by": None, "behind_by": None,
+                    "status": None, "merge_base": None, "commits": [], "files": [],
+                    "truncated": False,
+                }
+
+            entry["head"] = head or (old or {}).get("head")
+            entry["compare"] = cmp_block
+            branches.append(entry)
+            if t_branch("分支对比", i, len(raw_branches)):
+                progress("分支对比", i, len(raw_branches), name)
+
+        log(
+            f"  branches: {len(branches)}（compare 新拉 {n_branch_api}, 缓存复用 {n_branch_reuse}, "
+            f"已包含于主干 {n_branch_contained}）"
+        )
+        meta["file_stats"]["branches"] = len(branches)
+        meta["file_stats"]["branches_api"] = n_branch_api
+        meta["file_stats"]["branches_reused"] = n_branch_reuse
+
+    # --- graph.js：提交池（非主干节点 + 引用表） ---
+    # 供查看器按 ref 沿 parents 回溯（Commit 页切换分支）与渲染分支树。
+    # 语义：graph 是「当前分支 / 标签状态」的视图模型，每轮按线上重新派生，**不做跨轮累积**——
+    # 上游删掉分支后，其独有提交也随之从图中消失（与 branches 的快照语义一致）。
+    # 主干历史的事实来源仍是 commits.js（无限累积），已合并的提交不会因此丢失。
+    graph_nodes: dict = {}
+    graph_branches: dict = {}
+    graph_tags: dict = {}
+    graph_truncated = False
+
+    for b in branches:
+        if b.get("name") and b.get("sha"):
+            graph_branches[b["name"]] = b["sha"]
+    for t in tags:
+        if t.get("name") and t.get("sha"):
+            graph_tags[t["name"]] = t["sha"]
+
+    # 主干已导出的 sha：这些提交不进 graph（查看器运行时把两个池合并）
+    main_pool = {c.get("sha") for c in commits if c.get("sha")}
+
+    def _add_compare_node(c: dict) -> None:
+        sha = c.get("sha")
+        if not sha or sha in main_pool or sha in graph_nodes:
+            return
+        graph_nodes[sha] = {
+            "sha": sha,
+            "message": c.get("message") or "",
+            "author_name": c.get("author_name"),
+            "author_date": c.get("author_date"),
+            "author": c.get("author") or {},
+            "parents": [p for p in (c.get("parents") or []) if p],
+        }
+
+    for b in branches:
+        cmp_block = b.get("compare") or {}
+        if cmp_block.get("truncated"):
+            graph_truncated = True
+        for c in cmp_block.get("commits") or []:
+            _add_compare_node(c)
+
+    def _add_stub(sha: str) -> None:
+        """父提交/引用指向镜像外的提交：建占位节点，图上画虚线而不是假装连得上。"""
+        if not sha or sha in main_pool or sha in graph_nodes:
+            return
+        graph_nodes[sha] = {
+            "sha": sha,
+            "message": "",
+            "author_name": None,
+            "author_date": None,
+            "author": {},
+            "parents": [],
+            "stub": True,
+        }
+
+    # 引用指向的提交：不在主干池也不在节点池 → 占位（如 compare 失败的领先分支）
+    for sha in list(graph_branches.values()) + list(graph_tags.values()):
+        _add_stub(sha)
+    # 节点引用的父提交：缺失则占位（导出窗口外 / compare 截断）
+    for node in list(graph_nodes.values()):
+        for p in node.get("parents") or []:
+            _add_stub(p)
+
+    # --- 分支独有 commit 的逐条 diff（预算控制 + 增量复用） ---
+    # 复用上一轮 graph 节点里已抓到的 diff（按 sha 命中，不消耗预算）。
+    prev_graph_nodes = {}
+    for n in (prev.get("graph") or {}).get("nodes") or []:
+        if isinstance(n, dict) and n.get("sha"):
+            prev_graph_nodes[n["sha"]] = n
+
+    def _node_has_diff(n: dict) -> bool:
+        return bool(n.get("has_diff")) or ("files" in n)
+
+    branch_diff_budget = int(getattr(args, "max_branch_diffs", 30) or 0)
+    if args.skip_details:
+        branch_diff_budget = 0
+    n_bd_fetch = 0
+    n_bd_reuse = 0
+    n_bd_nodiff = 0
+
+    # 只为真实节点（非 stub）补 diff，按时间新→旧，保证预算优先给最近的提交
+    diff_targets = [
+        n for n in graph_nodes.values()
+        if not n.get("stub") and n.get("sha")
+    ]
+    diff_targets.sort(
+        key=lambda n: (n.get("author_date") or "", n.get("sha") or ""),
+        reverse=True,
+    )
+    stage_begin("分支 diff", len(diff_targets))
+    t_bdiff = make_throttle(1)
+    for i, node in enumerate(diff_targets, 1):
+        sha = node["sha"]
+        old = prev_graph_nodes.get(sha)
+        if old is not None and _node_has_diff(old):
+            # 命中缓存：整块复用，且**不计入预算**
+            node["files"] = old.get("files") or []
+            node["stats"] = old.get("stats") or {}
+            node["has_diff"] = True
+            n_bd_reuse += 1
+            if t_bdiff("分支 diff", i, len(diff_targets)):
+                progress("分支 diff", i, len(diff_targets), f"{short_sha(sha)}（缓存）")
+            continue
+        if n_bd_fetch >= branch_diff_budget:
+            n_bd_nodiff += 1
+            if t_bdiff("分支 diff", i, len(diff_targets)):
+                progress("分支 diff", i, len(diff_targets), f"{short_sha(sha)}（超出预算）")
+            continue
+        try:
+            raw_c, _ = http_get(f"{API}/repos/{repo}/commits/{sha}", token)
+            node["files"] = [map_file(f) for f in (raw_c.get("files") or [])]
+            node["stats"] = raw_c.get("stats") or {}
+            node["has_diff"] = True
+            n_bd_fetch += 1
+        except Exception as e:
+            log(f"  [warn] 分支 commit {short_sha(sha)} diff 失败: {e}")
+            n_bd_nodiff += 1
+        if t_bdiff("分支 diff", i, len(diff_targets)):
+            progress("分支 diff", i, len(diff_targets), short_sha(sha))
+    if not diff_targets:
+        progress("分支 diff", 0, 0, "无分支独有提交")
+
+    graph = {
+        "default_branch": default_branch,
+        "refs": {"branches": graph_branches, "tags": graph_tags},
+        "nodes": list(graph_nodes.values()),
+        "truncated": graph_truncated,
+    }
+    meta["file_stats"]["graph_nodes"] = len(graph_nodes)
+    meta["file_stats"]["graph_truncated"] = graph_truncated
+    meta["file_stats"]["branch_diffs"] = n_bd_fetch
+    meta["file_stats"]["branch_diffs_reused"] = n_bd_reuse
+    meta["file_stats"]["branch_diffs_skipped"] = n_bd_nodiff
+    if not getattr(args, "no_branches", False):
+        log(
+            f"  graph: 节点 {len(graph_nodes)}（主干池 {len(main_pool)} 不重复存）, "
+            f"refs 分支 {len(graph_branches)} / 标签 {len(graph_tags)}, truncated={graph_truncated}"
+        )
+        if diff_targets:
+            log(
+                f"  分支 commit diff: 新拉 {n_bd_fetch}, 缓存复用 {n_bd_reuse}, "
+                f"未拉 {n_bd_nodiff}（预算 {branch_diff_budget}）"
+            )
 
     # --- write data JS (file:// 兼容) ---
     log("写出 data/*.js ...")
@@ -1724,6 +2086,7 @@ def export(args) -> Path:
         "releases": releases,
         "files": {"tree": files_meta, "contents": contents, "truncated": truncated},
         "branches": branches,
+        "graph": graph,
     }
     stage_begin("写出数据", len(writes))
     for i, (name, payload) in enumerate(writes.items(), 1):
@@ -1759,6 +2122,14 @@ def main():
     ap.add_argument("--max-commits", type=int, default=100,
                     help="每轮从 GitHub 往回爬取的 commit 数（默认 100；缓存无限累积，旧的不删）")
     ap.add_argument("--max-tags", type=int, default=0, help="最多导出多少个 tag/release；0=全部")
+    ap.add_argument("--max-branches", type=int, default=100,
+                    help="最多导出多少个分支（默认 100；0=全部）")
+    ap.add_argument("--max-branch-commits", type=int, default=100,
+                    help="每个分支最多保留多少条「独有提交」（默认 100；0=全部）")
+    ap.add_argument("--max-branch-diffs", type=int, default=30,
+                    help="本轮最多为多少条分支独有 commit 拉逐条 diff（默认 30；0=不拉）")
+    ap.add_argument("--no-branches", action="store_true",
+                    help="完全不导出分支数据（branches.js 写空数组，查看器自动降级）")
     ap.add_argument("--max-file-bytes", type=int, default=400_000)
     ap.add_argument("--skip-details", action="store_true", help="不拉 PR/Issue 的 diff 与评论（更快）")
     ap.add_argument("--no-contents", dest="include_contents", action="store_false", default=True,
