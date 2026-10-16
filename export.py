@@ -1719,6 +1719,7 @@ def export(args) -> Path:
         "branches": 0,
         "branches_api": 0,
         "branches_reused": 0,
+        "branches_stale": False,
     }
 
     # --- download images (增量按 blob sha) + 正文外链图片 ---
@@ -1781,6 +1782,10 @@ def export(args) -> Path:
     else:
         stage_begin("Branches")
         log("拉取 branches ...")
+        prev_branches = {
+            b.get("name"): b for b in (prev.get("branches") or []) if b.get("name")
+        }
+        branches_failed = False
         try:
             raw_branches = paginate(
                 f"{API}/repos/{repo}/branches",
@@ -1789,12 +1794,24 @@ def export(args) -> Path:
                 "branches",
             )
         except Exception as e:
+            # 请求失败与「上游真的没有分支」必须区分：分支是快照语义，
+            # 若把失败当成空结果写出，上一轮抓到的分支会被静默清空、缓存也被连带摧毁。
+            # 这里回退到上一轮快照（宁可保留旧数据），并明确标注本轮未刷新。
+            branches_failed = True
             log(f"  [warn] branches 失败: {e}")
-            raw_branches = []
-
-        prev_branches = {
-            b.get("name"): b for b in (prev.get("branches") or []) if b.get("name")
-        }
+            if prev_branches:
+                raw_branches = [
+                    {
+                        "name": b.get("name"),
+                        "commit": {"sha": b.get("sha")},
+                        "protected": b.get("protected"),
+                    }
+                    for b in prev_branches.values()
+                ]
+                log(f"  [warn] 沿用上一轮分支快照 {len(raw_branches)} 条（本轮未刷新）")
+            else:
+                raw_branches = []
+                log("  [warn] 无上一轮分支快照可沿用，本次 branches 为空")
         # 主干 tip：优先取本轮 API 窗口第一条（最新），否则用默认分支的分支条目
         main_tip = None
         for c in raw_commits:
@@ -1994,10 +2011,13 @@ def export(args) -> Path:
         log(
             f"  branches: {len(branches)}（compare 新拉 {n_branch_api}, 缓存复用 {n_branch_reuse}, "
             f"已包含于主干 {n_branch_contained}）"
+            + ("　[本轮 branches 请求失败，数据来自上一轮快照]" if branches_failed else "")
         )
         meta["file_stats"]["branches"] = len(branches)
         meta["file_stats"]["branches_api"] = n_branch_api
         meta["file_stats"]["branches_reused"] = n_branch_reuse
+        # 供诊断：本轮分支快照是否因请求失败而沿用上一轮
+        meta["file_stats"]["branches_stale"] = branches_failed
 
     # --- graph.js：提交池（非主干节点 + 引用表） ---
     # 供查看器按 ref 沿 parents 回溯（Commit 页切换分支）与渲染分支树。

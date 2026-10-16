@@ -346,6 +346,7 @@ window.GH_DATA=window.GH_DATA||{};window.GH_DATA.<name>=<compact-json>;
 | 正文外链图片 | `.index.json` 中 `ext:<url>` 对应文件存在 | 跳过下载，仍写入 `image_map` |
 | Release compare | `published_at` 未变且已有 `compare` | 整块复用 |
 | 分支条目 | `sha` 未变、已有 `compare` 与 `head`、且 `default_branch` 未变 | 整条复用（0 次 API） |
+| 分支列表 | 本轮 `/branches` 请求失败 | **沿用上一轮快照**并在 `meta.file_stats.branches_stale` 标注，不清空 |
 | 分支 commit diff | graph 节点 sha 命中且上轮已有 `files`/`has_diff` | 整块复用（0 次 API，不占预算） |
 
 > **「失败 ≠ 空结果」原则**：增量缓存必须区分「上轮真的抓到了（哪怕结果是空）」与
