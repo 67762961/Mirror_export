@@ -1241,22 +1241,26 @@ def export(args) -> Path:
     commits = []
 
     def commit_needs_diff(old: dict | None) -> bool:
+        """该 commit 是否还需要（重新）抓取文件 diff。
+
+        关键：必须区分「抓取失败 / 超出预算」与「抓到了，结果就是空」。
+        旧实现只看 ``"files" in old``，而失败路径同样会写出 ``files: []``，
+        于是失败被永久固化成「已完成」，之后调大 --max-commit-diffs 也补不回来。
+        现在只有「明确标记过 has_diff」或「手里有非空文件列表」才算完成。
+        """
         if args.skip_details:
             return False
         if old is None:
             return True
-        if old.get("has_diff"):
+        if old.get("has_diff") or old.get("files"):
             return False
-        if "files" in old:
-            return False
+        # 既无 files 键、又没标记 has_diff（含 files 为空）→ 上轮没真正抓到，本轮重试
         return True
 
     def has_diff_done(old: dict | None) -> bool:
         if not old:
             return False
-        if old.get("has_diff"):
-            return True
-        return "files" in old
+        return bool(old.get("has_diff") or old.get("files"))
 
     # 本轮待补 diff：先「窗口内新出现的」，再「历史缓存里仍缺的」
     need_list = []
@@ -1325,6 +1329,10 @@ def export(args) -> Path:
                 entry["stats"] = old.get("stats") or {}
             if has_diff_done(old):
                 entry["has_diff"] = True
+        # 本轮没真正抓到（失败 / 超预算）且缓存里也没有 → 删掉 files 键，
+        # 让「files 键存在」严格表示「已拿到确定结果」，失败条目下轮才会被重试。
+        if not fetched and not has_diff_done(old):
+            entry.pop("files", None)
         return entry
 
     # 1) 处理本轮 API 窗口（新→旧）
@@ -1381,12 +1389,24 @@ def export(args) -> Path:
         # 进度放在循环最前：命中缓存走 continue 的也会计入，纯增量全命中时进度条照常走完
         if t_pr("PR 详情", i, len(raw_prs)):
             progress("PR 详情", i, len(raw_prs), f"#{num} {str(pr.get('title') or '')[:40]}")
+        # 复用判据：上轮「真的抓到了」才复用。旧缓存没有 *_fetched 标记时，
+        # 退化为「有非空内容即视为成功」（空内容无法区分失败与空结果，宁可重拉一次）。
+        old_files_ok = bool(old and (old.get("files_fetched") or old.get("files")))
+        old_comments_ok = bool(
+            old
+            and (
+                old.get("comments_fetched")
+                or old.get("issue_comments")
+                or not (pr.get("comments") or 0)   # 本来就没有评论，无需抓取
+            )
+        )
         if (
             incremental
             and not args.skip_details
             and old
             and old.get("updated_at") == pr.get("updated_at")
-            and old.get("files") is not None
+            and old_files_ok
+            and old_comments_ok
         ):
             prs.append(old)
             n_pr_reuse += 1
@@ -1394,10 +1414,13 @@ def export(args) -> Path:
         files = []
         comments = []
         pr_commits = []
+        files_fetched = False
+        comments_fetched = False
         if not args.skip_details:
             try:
                 raw_files = paginate(f"{API}/repos/{repo}/pulls/{num}/files", token, 300, f"pr#{num} files")
                 files = [map_file(f) for f in raw_files]
+                files_fetched = True
             except Exception as e:
                 log(f"  [warn] PR#{num} files 失败: {e}")
             try:
@@ -1416,12 +1439,19 @@ def export(args) -> Path:
                         }
                         for c in raw_c
                     ]
+                    comments_fetched = True
                 except Exception as e:
                     log(f"  [warn] PR#{num} comments 失败: {e}")
+            else:
+                # 无评论：视为已确认，无需每轮重查
+                comments_fetched = True
             n_pr_fetch += 1
         entry = map_pr(pr, files, comments)
         entry["merged"] = bool(pr.get("merged_at"))
         entry["commits_list"] = pr_commits
+        # 成功标记：与 files 内容解耦，保证「抓到空结果」与「没抓到」可区分
+        entry["files_fetched"] = files_fetched
+        entry["comments_fetched"] = comments_fetched
         prs.append(entry)
     prs.sort(key=lambda p: (p.get("number") or 0), reverse=True)
     log(f"  PRs: {len(prs)}（详情新拉 {n_pr_fetch}, 缓存复用 {n_pr_reuse}）")
@@ -1460,12 +1490,22 @@ def export(args) -> Path:
         if t_issue("Issues", i, len(raw_issues_all)):
             progress("Issues", i, len(raw_issues_all), f"#{num} {str(item.get('title') or '')[:40]}")
         old = prev_issues.get(num)
+        # 复用判据：同 PR 段。旧缓存无 comments_fetched 标记时，退化为
+        # 「有非空评论 / 本来就没有评论」才算成功，失败产生的空数组会被重拉。
+        old_comments_ok = bool(
+            old
+            and (
+                old.get("comments_fetched")
+                or old.get("issue_comments")
+                or not (item.get("comments") or 0)
+            )
+        )
         if (
             incremental
             and not args.skip_details
             and old
             and old.get("updated_at") == item.get("updated_at")
-            and old.get("issue_comments") is not None
+            and old_comments_ok
         ):
             issues.append(old)
             n_i_reuse += 1
@@ -1473,21 +1513,30 @@ def export(args) -> Path:
                 break
             continue
         comments = []
-        if not args.skip_details and (item.get("comments") or 0) > 0:
-            try:
-                raw_c = paginate(f"{API}/repos/{repo}/issues/{num}/comments", token, 200, f"issue#{num} comments")
-                comments = [
-                    {
-                        "user": slim_user(c.get("user")),
-                        "created_at": c.get("created_at"),
-                        "body": c.get("body") or "",
-                    }
-                    for c in raw_c
-                ]
-            except Exception as e:
-                log(f"  [warn] Issue#{num} comments 失败: {e}")
-            n_i_fetch += 1
-        issues.append(map_issue(item, comments))
+        comments_fetched = False
+        if (item.get("comments") or 0) > 0:
+            if not args.skip_details:
+                try:
+                    raw_c = paginate(f"{API}/repos/{repo}/issues/{num}/comments", token, 200, f"issue#{num} comments")
+                    comments = [
+                        {
+                            "user": slim_user(c.get("user")),
+                            "created_at": c.get("created_at"),
+                            "body": c.get("body") or "",
+                        }
+                        for c in raw_c
+                    ]
+                    comments_fetched = True
+                except Exception as e:
+                    log(f"  [warn] Issue#{num} comments 失败: {e}")
+                n_i_fetch += 1
+            # --skip-details：本轮有意不抓，保持 False，以便去掉该选项后能补抓
+        else:
+            # 本来就没有评论，无需抓取，视为已确认
+            comments_fetched = True
+        entry_issue = map_issue(item, comments)
+        entry_issue["comments_fetched"] = comments_fetched
+        issues.append(entry_issue)
         # 继承缓存里的 closed_by_pr（避免每次重查 timeline）
         if incremental and old and "closed_by_pr" in old:
             issues[-1]["closed_by_pr"] = old["closed_by_pr"]

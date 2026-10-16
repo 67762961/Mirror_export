@@ -337,9 +337,9 @@ window.GH_DATA=window.GH_DATA||{};window.GH_DATA.<name>=<compact-json>;
 | 数据 | 命中条件 | 行为 |
 |------|----------|------|
 | Commit 列表 | sha | 本轮窗口外的历史 commit 全部保留（无限累积） |
-| Commit diff | `has_diff` 或已有 `files` | 不重复拉 `/commits/{sha}` |
-| PR 详情 | `updated_at` 相同且已有 `files` | 整条复用 |
-| Issue 详情 | `updated_at` 相同且已有 `issue_comments` | 整条复用 |
+| Commit diff | `has_diff` 或 `files` 非空 | 不重复拉 `/commits/{sha}`；**失败/超预算的条目不带 `files` 键**，下轮会重试 |
+| PR 详情 | `updated_at` 相同且 `files_fetched`（旧包退化为 `files` 非空） | 整条复用；失败产生的空 `files` 不再被当成已完成 |
+| Issue 详情 | `updated_at` 相同且 `comments_fetched`（旧包退化为 `issue_comments` 非空 / 本就无评论） | 整条复用 |
 | Issue closed_by | 缓存中已有 `closed_by_pr` 字段（含 null） | 不再查 timeline |
 | 文件正文 | path 的 blob sha 未变 | 复用 `contents` |
 | 图片（树内） | `assets/.index.json` 中 path/sha 一致且文件存在 | 跳过下载 |
@@ -347,6 +347,12 @@ window.GH_DATA=window.GH_DATA||{};window.GH_DATA.<name>=<compact-json>;
 | Release compare | `published_at` 未变且已有 `compare` | 整块复用 |
 | 分支条目 | `sha` 未变、已有 `compare` 与 `head`、且 `default_branch` 未变 | 整条复用（0 次 API） |
 | 分支 commit diff | graph 节点 sha 命中且上轮已有 `files`/`has_diff` | 整块复用（0 次 API，不占预算） |
+
+> **「失败 ≠ 空结果」原则**：增量缓存必须区分「上轮真的抓到了（哪怕结果是空）」与
+> 「上轮抓取失败 / 超出预算」。后者若被写成确定的空结果，就会把一次网络抖动或一次
+> `--skip-details` 永久固化成「已完成」，此后调大 `--max-commit-diffs` 也补不回来。
+> 因此 commit diff 用「`files` 键是否存在」、PR/Issue 用显式 `files_fetched` /
+> `comments_fetched` 标记来表达「已确认」，失败条目一律不带这些成功标记。
 
 设计意图：多轮导出越跑越快，且旧 commit/diff 不被本轮窗口裁掉。改缓存键或结构时，必须保证旧包仍能被 `parse_data_js` 读回。
 
