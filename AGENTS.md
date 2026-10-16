@@ -28,6 +28,7 @@
 - 导出期间会锁定全部导出参数控件（见 `_set_profile_btns_state` 与 `self.param_widgets`）：因为工作线程结束时把**启动时的快照**写回磁盘，导出中被改动的控件会被静默吞掉。新增任何可编辑参数控件时，必须 `self.param_widgets.append(w)` 登记，否则用户能在导出中改它、改动却丢失。
 - 增量导出是默认行为：Commit 按 sha 无限累积、PR/Issue 按 `updated_at` 判断是否复用详情、文件内容与图片按 blob sha 判断变化；改增量逻辑时不得静默丢弃历史缓存。**「失败 ≠ 空结果」是硬约束**：抓取失败或超出预算的条目**不得**写成确定的空结果（commit 不带 `files` 键；PR/Issue 不带 `files_fetched` / `comments_fetched` 标记），否则一次网络抖动或一次 `--skip-details` 会被永久固化成「已完成」，之后调大 `--max-commit-diffs` 也补不回来。新增可增量复用的字段时，必须同时提供「已确认抓到」的成功标记。
 - 请求失败不得被当成空数据写出：`/branches` 等列表请求失败时**沿用上一轮快照**（分支是快照语义，清空会连带摧毁缓存），并在 `meta.file_stats.branches_stale` 标注本轮未刷新。
+- 跨轮派生字段不得依赖缓存命中分支：`related_pr_nums` 这类「只由本轮已拿到的数据派生」的字段，必须在复用判断**之前**无条件计算，否则命中缓存时会缺失该字段、后续回填段把 `related_prs` 覆盖成空值，静默丢数据。改 Release 对比段时注意这条。
 - 分支（branches）语义与其他数据相反：**分支列表是快照**，上游删掉的分支本包不再保留（只读镜像：GitHub 上删了就看不到了）；已抓到的 commit 节点仍在 `commits.js` 中累积。分支条目按 `sha` + `default_branch` 未变判断复用；tip 已包含于主干历史的分支（纯落后）**不发 compare 请求**，`behind_by` 本地按祖先集合计算，历史不完整时标 `behind_approx`。compare 的超限判断用 `total_commits > len(commits)`，不硬编码 API 上限。
 - 分支独有 commit 的逐条 diff 走 `--max-branch-diffs`（默认 30，0=不拉；`--skip-details` 强制为 0）：只为非 stub 节点拉取，按 `author_date` 新→旧排序以保证预算优先给最近提交；命中上一轮 `graph` 节点缓存的**不消耗预算**。预算耗尽后剩余节点只保留骨架（图上不断链），不报错。
 - 查看器查提交一律走 `commitPool()` / `findCommitAnywhere()`（主干 → graph → PR 内 → Release compare 按 sha 去重合并），**禁止再写只查 `D.commits` 的查找**：分支独有提交与未合并 PR 的提交不在 `commits.js` 里，只查主干会让它们点开报「未找到」。Commit 页的 ref 切换（`commitRefs` / `commitsForRef`）从 `graph.refs` 取选项、沿 `parents` 回溯（需带环状保护），无 `graph.js` 的旧包要退回平铺列表。

@@ -1174,6 +1174,11 @@ def export(args) -> Path:
     for i, rel in enumerate(releases):
         tag = rel.get("tag_name")
         old = prev_releases.get(tag)
+        # 从 body 里抽 #123 关联 PR。这一步只依赖 body（每轮都会重新拉到），
+        # 与 compare 的缓存命中无关，因此必须放在复用判断之前无条件执行：
+        # 否则命中缓存时 related_pr_nums 缺失，回填段会把 related_prs 覆盖成 []。
+        body = rel.get("body") or ""
+        rel["related_pr_nums"] = sorted({int(x) for x in re.findall(r"#(\d+)", body)})
         if (
             incremental
             and old
@@ -1181,7 +1186,6 @@ def export(args) -> Path:
             and old.get("published_at") == rel.get("published_at")
         ):
             rel["compare"] = old["compare"]
-            rel["related_prs"] = old.get("related_prs") or []
             progress("Release 对比", i + 1, len(releases), f"{tag}（缓存）")
             continue
         base = tag_names[i + 1] if i + 1 < len(tag_names) else None
@@ -1211,10 +1215,6 @@ def export(args) -> Path:
                 log(f"  [warn] compare {base}...{tag} 失败: {e}")
                 compare["error"] = str(e)
         rel["compare"] = compare
-        # 从 body 里抽 #123 关联已导出的 PR（稍后回填）
-        body = rel.get("body") or ""
-        nums = sorted({int(x) for x in re.findall(r"#(\d+)", body)})
-        rel["related_pr_nums"] = nums
         log(f"  release {tag}: base={base}, commits={compare.get('total_commits', 0)}")
         progress("Release 对比", i + 1, len(releases), f"{tag}")
 
@@ -1764,6 +1764,7 @@ def export(args) -> Path:
             meta["file_stats"]["body_images"] = 0
             meta["file_stats"]["body_images_reused"] = 0
             meta["file_stats"]["body_images_failed"] = 0
+
     else:
         meta["file_stats"]["images"] = 0
         meta["file_stats"]["images_reused"] = 0
