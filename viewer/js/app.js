@@ -13,6 +13,9 @@
     commitRef: null,
     releaseDetail: null,
     branchDetail: null,
+    // 分支树：显示档位（150/300/600/0=全部）与当前显示条数（「加载更多」累加）
+    graphLimit: 150,
+    graphRows: 150,
     search: "",
     filePath: null,
     showMdRaw: false,
@@ -988,6 +991,8 @@
       commitRef: state.commitRef,
       releaseDetail: state.releaseDetail,
       branchDetail: state.branchDetail,
+      graphLimit: state.graphLimit,
+      graphRows: state.graphRows,
       search: state.search,
       filePath: state.filePath,
       compareBase: state.compareBase,
@@ -1005,6 +1010,8 @@
     state.commitRef = snap.commitRef;
     state.releaseDetail = snap.releaseDetail;
     state.branchDetail = snap.branchDetail;
+    state.graphLimit = snap.graphLimit != null ? snap.graphLimit : 150;
+    state.graphRows = snap.graphRows != null ? snap.graphRows : 150;
     state.search = snap.search;
     state.filePath = snap.filePath;
     state.compareBase = snap.compareBase;
@@ -2028,13 +2035,24 @@
     if (!G || !nodes.length) return "";
 
     const refs = (D.graph && D.graph.refs) || {};
+    const layoutOpts = {
+      branches: refs.branches || {},
+      tags: refs.tags || {},
+      defaultBranch: (D.meta && D.meta.default_branch) || (D.graph && D.graph.default_branch) || "",
+    };
     let layout;
     try {
-      layout = G.buildRows(nodes, {
-        branches: refs.branches || {},
-        tags: refs.tags || {},
-        defaultBranch: (D.meta && D.meta.default_branch) || (D.graph && D.graph.default_branch) || "",
-      }, { maxRows: 150 });
+      // 第一趟：全量布局，只为拿到「全局最大泳道数」。
+      // 必须在首屏就定好左侧宽度，否则「加载更多」后 maxLane 变大、已显示的行会整体右移。
+      // 实测 3000 节点全量布局仅约 2ms，可忽略。
+      const probe = G.buildRows(nodes, layoutOpts, { maxRows: 0 });
+      // 第二趟：按当前显示条数渲染，并强制用全局泳道数，保证宽度恒定
+      layout = G.buildRows(nodes, layoutOpts, {
+        maxRows: state.graphRows > 0 ? state.graphRows : 0,
+        laneCount: probe.laneCount,
+      });
+      layout.totalNodes = probe.totalNodes;
+      layout.allRows = probe.rowCount;
     } catch (e) {
       // 布局异常不应拖垮整页：退化为不显示图
       return `<div class="warn-box">分支树渲染失败：${esc(e && e.message)}</div>`;
@@ -2066,11 +2084,31 @@
         </div>`;
     }).join("");
 
+    const shown = layout.rowCount;
+    const total = layout.allRows != null ? layout.allRows : layout.totalNodes;
+    const remain = Math.max(0, total - shown);
+    const limitOptions = [[150, "最近 150 条"], [300, "最近 300 条"], [600, "最近 600 条"], [0, "全部"]]
+      .map(([v, lab]) => `<option value="${v}"${state.graphLimit === v ? " selected" : ""}>${lab}</option>`)
+      .join("");
+    const toolbar = `
+      <div class="filters gitgraph-toolbar">
+        <label class="small muted">显示</label>
+        <select id="graph-limit" aria-label="显示条数">${limitOptions}</select>
+        <span class="small muted">共 ${total} 个提交${remain ? ` · 已显示最近 ${shown} 条` : ""}</span>
+      </div>`;
+    const moreBtn = remain
+      ? `<div class="gitgraph-more">
+           <button class="btn" id="graph-more">加载更多（还有 ${remain} 条）</button>
+         </div>`
+      : "";
+
     return `
       <div class="panel">
-        <div class="panel-hd">分支树${layout.truncated ? `（仅显示最近 ${layout.rowCount} / ${layout.totalNodes} 个提交）` : ""}${layout.overflow ? `（分支线较多，可横向滚动查看）` : ""}</div>
+        <div class="panel-hd">分支树${layout.truncated ? `（仅显示最近 ${shown} / ${total} 个提交）` : ""}${layout.overflow ? `（分支线较多，可横向滚动查看）` : ""}</div>
         <div class="panel-bd gitgraph-body">
+          ${toolbar}
           <div class="gitgraph">${rows}</div>
+          ${moreBtn}
           <div class="gitgraph-legend">
             <span><span class="gg-dot-legend"></span> 提交</span>
             <span><span class="gg-dot-legend gg-dot-legend-merge"></span> 合并提交</span>
@@ -2280,6 +2318,26 @@
         render();
       });
     });
+    // 分支树条数选择 / 加载更多：属于同页显示控制，不入导航历史
+    const graphLimitSel = $("#graph-limit");
+    if (graphLimitSel) {
+      graphLimitSel.addEventListener("change", () => {
+        const v = Number(graphLimitSel.value);
+        state.graphLimit = v;
+        // 切档位即重置显示条数：0 表示全部
+        state.graphRows = v > 0 ? v : 0;
+        render();
+      });
+    }
+    const graphMoreBtn = $("#graph-more");
+    if (graphMoreBtn) {
+      graphMoreBtn.addEventListener("click", () => {
+        // 每次追加一档（150）；若当前档位为「全部」则无按钮
+        state.graphRows = (state.graphRows > 0 ? state.graphRows : 0) + 150;
+        render();
+      });
+    }
+
     // Commit 页 ref 切换：属于同页筛选，不入导航历史
     const commitRefSel = $("#commit-ref");
     if (commitRefSel) {

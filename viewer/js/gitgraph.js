@@ -112,10 +112,16 @@
 
   /* 泳道分配 + 逐行线段计算。
      线段坐标用「泳道号 + 0..1 的行内纵向比例」表示，渲染时再换算成像素；
-     颜色号按线段记录（见文件头说明 2、3）。 */
+     颜色号按线段记录（见文件头说明 2、3）。
+
+     opts.maxRows：最多布局多少行。**不传 = 默认 150**；显式传 0 或负数 = 不限
+     （「不限」用于「显示全部」与首屏探测全局泳道数）。
+     opts.laneCount：强制统一的泳道列数（用于「加载更多」时保持左侧宽度不变）。 */
   function buildRows(nodes, refs, opts) {
     opts = opts || {};
-    var maxRows = opts.maxRows > 0 ? opts.maxRows : 150;
+    var rawMax = opts.maxRows;
+    var unlimited = rawMax === 0 || (typeof rawMax === "number" && rawMax < 0);
+    var maxRows = unlimited ? Infinity : (rawMax > 0 ? rawMax : 150);
     var maxLanes = opts.maxLanes > 0 ? opts.maxLanes : MAX_LANES;
 
     var bySha = new Map();
@@ -334,15 +340,18 @@
       });
     }
 
-    // 统一使用全局最大泳道数，保证各行左侧留白宽度一致、文字对齐
-    var gutterLanes = maxLane + 1;
+    // 统一左侧留白宽度：默认用本次布局的最大泳道数；
+    // 若调用方指定了 laneCount（「加载更多」时传首屏探测到的全局值），
+    // 则用它兜底——否则追加内容后 maxLane 变大，已显示的行会整体右移。
+    var gutterLanes = Math.max(maxLane + 1, opts.laneCount > 0 ? opts.laneCount : 0);
     cells.forEach(function (cell) {
       cell.laneCount = Math.max(cell.laneCount, gutterLanes);
     });
 
     return {
       cells: cells,
-      maxLane: maxLane,
+      maxLane: Math.max(maxLane, gutterLanes - 1),
+      laneCount: gutterLanes,
       rowCount: cells.length,
       truncated: truncated,
       totalNodes: bySha.size,

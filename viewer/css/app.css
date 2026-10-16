@@ -1155,6 +1155,17 @@ tr.hunk td {
   overflow-x: auto;
   font-size: 12px;
 }
+/* 分支树工具条：显示档位选择 + 条数说明（复用 .filters 的排版） */
+.gitgraph-toolbar {
+  padding: 10px 14px 0;
+  margin-bottom: 8px;
+}
+.gitgraph-more {
+  padding: 10px 14px 12px;
+  text-align: center;
+  border-top: 1px solid var(--border-muted);
+  background: var(--bg);
+}
 .gitgraph-row {
   display: flex;
   align-items: center;
@@ -1164,6 +1175,11 @@ tr.hunk td {
      导致 SVG 溢出或行间留缝（两种都会让竖线断开）。 */
   height: 26px;
   box-shadow: inset 0 -1px 0 var(--border-muted);
+  /* 视口外的行跳过渲染：行数上千时能显著降低首屏解析/回流开销。
+     contain-intrinsic-size 必须给，否则浏览器不知道视口外行的高度、滚动条会乱跳。
+     不支持的浏览器自动忽略这两条，不影响功能。 */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 26px;
   cursor: pointer;
   transition: background 0.1s ease;
 }
