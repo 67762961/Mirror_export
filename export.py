@@ -1048,6 +1048,31 @@ def asset_rel(path: str) -> str:
     return path.replace("\\", "/").lstrip("./")
 
 
+def merge_image_map(prev_map: dict | None, new_map: dict | None, out: Path) -> dict:
+    """把本轮正文图片映射与上一轮合并（新结果优先），避免整块覆盖丢历史。
+
+    ``meta.image_map`` 是「原始 URL → assets 相对路径」。若每轮只写本轮结果，
+    那么第二轮带 ``--no-assets``、或本轮收集到的 URL 集合为空（例如数量上限调小）时，
+    映射会被清成 ``{}``，而 ``assets/externals`` 里的文件其实还在 —— 内网查看器
+    拿不到映射就退回原始外链，正文图片全部裂图。
+
+    合并时校验目标文件确实存在：缺失的旧映射不保留，避免指向已被清理的文件。
+    """
+    merged: dict = {}
+    for url, rel in (prev_map or {}).items():
+        if not isinstance(rel, str) or not rel:
+            continue
+        try:
+            if (out / "assets" / rel).is_file():
+                merged[url] = rel
+        except OSError:
+            continue
+    for url, rel in (new_map or {}).items():
+        if isinstance(rel, str) and rel:
+            merged[url] = rel
+    return merged
+
+
 def export(args) -> Path:
     # 每轮导出都必须重置进度状态：GUI 在同一进程内连续导出多个组合时，
     # 上一轮遗留的 overall=100 会让新一轮首帧直接显示 100%（见 reset_progress）。
@@ -1756,7 +1781,13 @@ def export(args) -> Path:
                 aliases=aliases,
                 stage="正文图片",
             )
-            meta["image_map"] = image_map
+            # 与上一轮合并：本轮没扫到的 URL（数量上限调小 / 条目被删）仍保留旧映射，
+            # 只要 assets 里的文件还在，内网就还能显示
+            meta["image_map"] = merge_image_map(
+                (prev.get("meta") or {}).get("image_map") if incremental else None,
+                image_map,
+                out,
+            )
             meta["file_stats"]["body_images"] = b_new
             meta["file_stats"]["body_images_reused"] = b_skip
             meta["file_stats"]["body_images_failed"] = b_fail
@@ -1764,14 +1795,24 @@ def export(args) -> Path:
             meta["file_stats"]["body_images"] = 0
             meta["file_stats"]["body_images_reused"] = 0
             meta["file_stats"]["body_images_failed"] = 0
-
+            # 本轮没有正文图片 URL：沿用上一轮映射（文件仍在 assets/externals）
+            meta["image_map"] = merge_image_map(
+                (prev.get("meta") or {}).get("image_map") if incremental else None,
+                None,
+                out,
+            )
     else:
         meta["file_stats"]["images"] = 0
         meta["file_stats"]["images_reused"] = 0
         meta["file_stats"]["body_images"] = 0
         meta["file_stats"]["body_images_reused"] = 0
         meta["file_stats"]["body_images_failed"] = 0
-        meta["image_map"] = {}
+        # --no-assets：不下载新图片，但不得清掉上一轮已下载文件的映射
+        meta["image_map"] = merge_image_map(
+            (prev.get("meta") or {}).get("image_map") if incremental else None,
+            None,
+            out,
+        )
 
     # --- branches（清单 + 头部提交摘要 + 与默认分支的对比） ---
     # 只读镜像语义：分支列表是「快照」，上游删掉的分支本包不再保留（与 commit 的无限累积相反）。
