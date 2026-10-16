@@ -266,7 +266,10 @@ python export.py --repo owner/name --full   # 强制全量
 - 搜索、PR/Issue 过滤、Commit 页 ref 切换、文件树点选、compare 运行只重绘，不入导航历史；
 - 视图：`overview` / `prs` / `issues` / `commits` / `tags` / `branches` / `compare` / `files` / `readme`；
 - **提交总池**：`commitPool()` 把 主干（`commits.js`）→ graph 节点 → PR 内 commit（`prs[].commits_list`）→ Release compare 四者按 sha 去重合并（先命中者字段更全）。`findCommitAnywhere()` 查该池并容忍短 sha。Commit 详情、分支详情、正文 commit 链接全部走它，因此**分支独有提交与未合并 PR 的提交都能点开**（旧版只查 `commits.js`，点进去显示「未找到」）；
-- **Commit 页按 ref 查看**：`commitRefs()` 由 `graph.refs` 生成选项（默认分支排最前，标签在后）；`commitsForRef()` 从该 ref 的 tip 沿 `parents` 回溯得到可达提交（GitHub reachable 语义，带环状保护）。默认分支直接沿用 `commits.js` 顺序以保持旧观感；旧导出包无 `graph.js` 时不显示选择器，退回原来的平铺列表；
+- **Commit 页按 ref 查看**：`commitRefs()` 由 `graph.refs` 生成选项（默认分支排最前，标签按「指向提交的时间」新→旧排，时间未知的排最后）；`commitsForRef()` 从该 ref 的 tip 沿 `parents` 回溯得到可达提交（GitHub reachable 语义，带环状保护）。默认分支直接沿用 `commits.js` 顺序以保持旧观感；旧导出包无 `graph.js` 时不显示选择器，退回原来的平铺列表；
+  - **条数档位与「加载更多」**：与分支树同一套模式——顶部档位选择（`150 / 300 / 600 / 全部`，默认 150）、底部「加载更多（还有 N 条）」每次 +150，均属**同页显示控制、不入 `navHistory`**；`state.commitLimit` / `state.commitRows` 纳入 `snapshot`/`restore`。切换 ref 时把 `commitRows` 重置回档位值（换 ref 相当于换一批提交）。
+  - **搜索时不截断**：`state.search` 非空时跨全量匹配并显示全部命中（否则要翻很多页才找得到），此时隐藏档位选择与加载更多，计数文案改为「匹配 N 条（跨全部 M 条）」。
+  - Commit 列表行带 `.commit-row` 类，挂 `content-visibility: auto` + `contain-intrinsic-size`（理由同分支树：长列表瓶颈在 DOM）；
 - **分支页 Git Graph**：`js/gitgraph.js` 是纯函数模块（无 DOM 依赖，可在 Node 单测），负责拓扑排序与泳道分配；`app.js` 的 `renderGitGraph()` 只做 DOM 拼接。
   - `topoOrder()`：Kahn 排序保证「子提交在父提交之前」，同级按 `author_date` 新→旧（`sha` 兜底稳定）；环或异常输入按日期补齐，**不死循环、不丢节点**；
   - `buildRows()`：逐行分配泳道。**泳道会回收复用**——合并提交把分支收回时，紧接着的新分支优先复用刚腾出的泳道，因此「从主干拉出 → 合并回主干」这种最常见的 PR 模式**只占 1 条泳道宽度**，不会每合并一次就右扩一格（早期版本因排除「刚腾出的泳道」导致该问题）。合并提交的多个父各占一条泳道；尾部空闲泳道即时裁剪；所有行的 `laneCount` 统一为全局最大值，保证左侧留白一致。

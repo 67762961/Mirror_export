@@ -11,6 +11,9 @@
     issueDetail: null,
     commitDetail: null,
     commitRef: null,
+    // Commit 页：显示档位（150/300/600/0=全部）与当前显示条数（「加载更多」累加）
+    commitLimit: 150,
+    commitRows: 150,
     releaseDetail: null,
     branchDetail: null,
     // 分支树：显示档位（150/300/600/0=全部）与当前显示条数（「加载更多」累加）
@@ -989,6 +992,8 @@
       issueDetail: state.issueDetail,
       commitDetail: state.commitDetail,
       commitRef: state.commitRef,
+      commitLimit: state.commitLimit,
+      commitRows: state.commitRows,
       releaseDetail: state.releaseDetail,
       branchDetail: state.branchDetail,
       graphLimit: state.graphLimit,
@@ -1008,6 +1013,8 @@
     state.issueDetail = snap.issueDetail;
     state.commitDetail = snap.commitDetail;
     state.commitRef = snap.commitRef;
+    state.commitLimit = snap.commitLimit != null ? snap.commitLimit : 150;
+    state.commitRows = snap.commitRows != null ? snap.commitRows : 150;
     state.releaseDetail = snap.releaseDetail;
     state.branchDetail = snap.branchDetail;
     state.graphLimit = snap.graphLimit != null ? snap.graphLimit : 150;
@@ -1107,7 +1114,7 @@
     const firstLine = (c.message || "").split("\n")[0];
     const nFiles = (c.files || []).length;
     return `
-      <div class="row" data-commit="${esc(c.sha)}">
+      <div class="row commit-row" data-commit="${esc(c.sha)}">
         <div class="row-main">
           <div class="row-title">${esc(firstLine)}</div>
           <div class="row-meta">
@@ -1666,10 +1673,20 @@
     const refs = commitRefs();
     const ref = currentCommitRef();
     const all = commitsForRef(ref);
-    const list = all.filter((c) => {
+    const matched = all.filter((c) => {
       const hay = `${c.sha} ${c.message || ""} ${c.author_name || ""}`;
       return matchSearch(hay);
     });
+
+    // 搜索时跨全量匹配、不做截断（否则要翻很多页才找得到）；
+    // 无搜索时按档位截断，可点「加载更多」追加。
+    const searching = !!state.search;
+    const unlimited = !(state.commitRows > 0);
+    const list = (searching || unlimited) ? matched : matched.slice(0, state.commitRows);
+    const remain = (searching || unlimited) ? 0 : Math.max(0, matched.length - list.length);
+    const commitLimitOptions = [[150, "最近 150 条"], [300, "最近 300 条"], [600, "最近 600 条"], [0, "全部"]]
+      .map(([v, lab]) => `<option value="${v}"${state.commitLimit === v ? " selected" : ""}>${lab}</option>`)
+      .join("");
 
     // 只有存在 graph 引用表时才显示切换器（旧导出包自动隐藏）
     const selector = refs.length
@@ -1689,14 +1706,32 @@
           : `${ref.type === "branch" ? "分支" : "标签"} ${esc(ref.name)} 可达的提交`)
       : `默认分支 ${esc((D.meta && D.meta.default_branch) || "")}`;
 
+    const toolbar = searching
+      ? ""
+      : `<div class="filters list-toolbar">
+           <label class="small muted">显示</label>
+           <select id="commit-limit" aria-label="显示条数">${commitLimitOptions}</select>
+           <span class="small muted">共 ${matched.length} 个提交${remain ? ` · 已显示最近 ${list.length} 条` : ""}</span>
+         </div>`;
+    const moreBtn = remain
+      ? `<div class="list-more">
+           <button class="btn" id="commit-more">加载更多（还有 ${remain} 条）</button>
+         </div>`
+      : "";
+    const countText = searching
+      ? `匹配 ${list.length} 条（跨全部 ${all.length} 条）`
+      : `显示 ${list.length} / ${matched.length} 条`;
+
     return `
       <h1 class="h1">Commits</h1>
       <p class="muted small" style="margin-top:0">${hint} · 共 ${all.length} 条 · 点击行查看文件变更</p>
       ${selector}
-      <div class="count-line">显示 ${list.length} 条</div>
+      ${toolbar}
+      <div class="count-line">${countText}</div>
       <div class="list">
         ${list.map(commitRow).join("") || `<div class="empty">无匹配结果</div>`}
       </div>
+      ${moreBtn}
     `;
   }
 
@@ -2318,6 +2353,24 @@
         render();
       });
     });
+    // Commit 页条数选择 / 加载更多：属于同页显示控制，不入导航历史
+    const commitLimitSel = $("#commit-limit");
+    if (commitLimitSel) {
+      commitLimitSel.addEventListener("change", () => {
+        const v = Number(commitLimitSel.value);
+        state.commitLimit = v;
+        state.commitRows = v > 0 ? v : 0; // 0 表示全部
+        render();
+      });
+    }
+    const commitMoreBtn = $("#commit-more");
+    if (commitMoreBtn) {
+      commitMoreBtn.addEventListener("click", () => {
+        state.commitRows = (state.commitRows > 0 ? state.commitRows : 0) + 150;
+        render();
+      });
+    }
+
     // 分支树条数选择 / 加载更多：属于同页显示控制，不入导航历史
     const graphLimitSel = $("#graph-limit");
     if (graphLimitSel) {
@@ -2343,6 +2396,8 @@
     if (commitRefSel) {
       commitRefSel.addEventListener("change", () => {
         state.commitRef = commitRefSel.value;
+        // 换 ref 相当于换一批提交：回到当前档位重新看
+        state.commitRows = state.commitLimit > 0 ? state.commitLimit : 0;
         render();
       });
     }

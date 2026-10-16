@@ -1166,6 +1166,23 @@ tr.hunk td {
   border-top: 1px solid var(--border-muted);
   background: var(--bg);
 }
+
+/* 通用列表工具条 / 加载更多（分支树与 Commit 页共用） */
+.list-toolbar {
+  padding: 0 0 10px;
+  margin-bottom: 0;
+}
+.list-more {
+  padding: 12px 0 4px;
+  text-align: center;
+}
+/* Commit 列表行：视口外跳过渲染（长列表性能瓶颈在 DOM 不在布局）。
+   contain-intrinsic-size 必给，否则浏览器不知道离屏行高、滚动条会乱跳。
+   不支持的浏览器自动忽略，不影响功能。 */
+.commit-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 40px;
+}
 .gitgraph-row {
   display: flex;
   align-items: center;
