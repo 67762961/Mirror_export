@@ -24,6 +24,9 @@
     showMdRaw: false,
     compareBase: null,
     compareHead: null,
+    // 版本对比结果列表：显示档位与当前条数（与分支树/Commit 页同一套模式）
+    compareLimit: 150,
+    compareRows: 150,
     rangeKey: "7",
     rangeCustomDays: 30,
   };
@@ -1002,6 +1005,8 @@
       filePath: state.filePath,
       compareBase: state.compareBase,
       compareHead: state.compareHead,
+      compareLimit: state.compareLimit,
+      compareRows: state.compareRows,
     };
   }
 
@@ -1023,6 +1028,8 @@
     state.filePath = snap.filePath;
     state.compareBase = snap.compareBase;
     state.compareHead = snap.compareHead;
+    state.compareLimit = snap.compareLimit != null ? snap.compareLimit : 150;
+    state.compareRows = snap.compareRows != null ? snap.compareRows : 150;
     state.showMdRaw = false;
   }
 
@@ -1888,50 +1895,170 @@
   }
 
   /* ---------- Compare ---------- */
-  function renderCompare() {
-    const names = D.tags.map((t) => t.name);
-    const opts = names.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
+  /* 该 ref 可达的提交 sha 集合（沿 parents 回溯），用于做集合差 */
+  function reachableSet(ref) {
+    const pool = commitPool();
+    const seen = new Set();
+    if (!ref || !ref.sha) return seen;
+    const stack = [ref.sha];
+    while (stack.length) {
+      const sha = stack.pop();
+      if (!sha || seen.has(sha)) continue;
+      seen.add(sha);
+      const c = pool.get(sha);
+      ((c && c.parents) || []).forEach((p) => { if (p && !seen.has(p)) stack.push(p); });
+    }
+    return seen;
+  }
 
-    let resultHtml = `<div class="empty">选择两个 Tag / 分支名，本地用已导出的 Commit 列表做近似对比。<br/>完整 diff 请在外网用导出脚本对特定 compare 拉取，或对照 PR 的文件变更。</div>`;
+  /* 对比可选的 ref：有 graph 时复用 commitRefs（分支默认优先、标签按时间新→旧）；
+     旧包没有 graph 时退化为纯 tag 列表。 */
+  function compareRefs() {
+    const g = D.graph && D.graph.refs;
+    const hasGraphRefs = !!g && (Object.keys(g.branches || {}).length || Object.keys(g.tags || {}).length);
+    if (hasGraphRefs) return commitRefs();
+    return (D.tags || []).map((t) => ({ type: "tag", name: t.name, sha: t.sha, isDefault: false }));
+  }
 
-    if (state.compareBase && state.compareHead && state.compareBase !== state.compareHead) {
-      const base = state.compareBase;
-      const head = state.compareHead;
-      const baseSha = (D.tags.find((t) => t.name === base) || {}).sha;
-      const headSha = (D.tags.find((t) => t.name === head) || {}).sha;
-      let slice = D.commits.slice();
-      const headIdx = headSha ? slice.findIndex((c) => c.sha === headSha) : 0;
-      const baseIdx = baseSha ? slice.findIndex((c) => c.sha === baseSha) : -1;
-      let between = [];
-      if (baseIdx >= 0 && headIdx >= 0) {
-        const [a, b] = headIdx < baseIdx ? [headIdx, baseIdx] : [baseIdx, headIdx];
-        between = slice.slice(a, b + 1);
-      } else if (baseIdx >= 0) {
-        between = slice.slice(0, baseIdx);
-      } else {
-        between = slice.slice(0, 30);
+  function findCompareRef(refs, key) {
+    return refs.find((r) => refKey(r) === key) || null;
+  }
+
+  /* 对比结果：head 相对 base 的独有提交 + 落后条数 + 分叉点。
+     用「可达集合差」而不是数组下标切片——后者对分支根本不成立
+     （分支的提交不在 commits.js 里，切片只能在主干上近似）。 */
+  function compareResult(baseRef, headRef) {
+    const pool = commitPool();
+    const baseSet = reachableSet(baseRef);
+    const headSet = reachableSet(headRef);
+    const headOnly = [];
+    const baseOnly = [];
+    headSet.forEach((sha) => {
+      if (baseSet.has(sha)) return;
+      const c = pool.get(sha);
+      if (c && !c.stub) headOnly.push(c);
+    });
+    baseSet.forEach((sha) => {
+      if (headSet.has(sha)) return;
+      const c = pool.get(sha);
+      if (c && !c.stub) baseOnly.push(c);
+    });
+    headOnly.sort(byDateDesc);
+    baseOnly.sort(byDateDesc);
+    // 分叉点：两端都可达的提交里最新的那个（近似 merge base）
+    let mergeBase = null;
+    let bestKey = null;
+    baseSet.forEach((sha) => {
+      if (!headSet.has(sha)) return;
+      const c = pool.get(sha);
+      const k = (c && (c.author_date || c.committer_date)) || "";
+      if (bestKey === null || k >= bestKey) { bestKey = k; mergeBase = sha; }
+    });
+    return { headOnly, baseOnly, mergeBase };
+  }
+
+  /* 导出时预计算好的文件差异：只在「方向完全一致」时可用；
+     方向相反时增删会对调，直接展示会误导，故不展示。 */
+  function precomputedFiles(baseRef, headRef) {
+    for (const b of (D.branches || [])) {
+      const cmp = b.compare || {};
+      if (!cmp.base || !b.name) continue;
+      if (cmp.base === baseRef.name && b.name === headRef.name) {
+        return { files: cmp.files || [], from: "导出时已缓存该分支与默认分支的对比" };
       }
+    }
+    for (const r of (D.releases || [])) {
+      const cmp = r.compare || {};
+      const tag = r.tag_name || r.name;
+      if (!cmp.base || !tag) continue;
+      if (cmp.base === baseRef.name && tag === headRef.name) {
+        return { files: cmp.files || [], from: "导出时已缓存该 Release 与上一 Tag 的对比" };
+      }
+    }
+    return null;
+  }
+
+  function renderCompare() {
+    const refs = compareRefs();
+    const label = (r) => (r.type === "branch" ? "分支 · " : "标签 · ") + r.name;
+    const optionHtml = (cur) => refs
+      .map((r) => `<option value="${esc(refKey(r))}"${cur && refKey(r) === refKey(cur) ? " selected" : ""}>${esc(label(r))}</option>`)
+      .join("");
+
+    // 默认：base = 默认分支，head = 最新 tag（无 tag 则取第一个非默认分支）
+    const defRef = refs.find((r) => r.type === "branch" && r.isDefault) || refs[0] || null;
+    const newestTag = refs.find((r) => r.type === "tag") || null;
+    const firstOther = refs.find((r) => !defRef || refKey(r) !== refKey(defRef)) || null;
+    const baseRef = findCompareRef(refs, state.compareBase) || defRef;
+    const headRef = findCompareRef(refs, state.compareHead) || newestTag || firstOther;
+
+    const selectors = refs.length
+      ? `<div class="filters">
+           <label class="small muted">base</label>
+           <select id="cmp-base">${optionHtml(baseRef)}</select>
+           <label class="small muted">head</label>
+           <select id="cmp-head">${optionHtml(headRef)}</select>
+           <button class="btn btn-primary" id="cmp-run">对比</button>
+         </div>`
+      : "";
+
+    let resultHtml = refs.length
+      ? `<div class="empty">选择 base → head 做本地对比。<br/>镜像里只有提交列表与「导出时预计算好的」文件差异，无法在内网现算任意两点的 diff。</div>`
+      : `<div class="empty">该导出包未包含分支 / 标签引用表（graph.js），无法对比。<br/>重新导出即可获得分支对比能力。</div>`;
+
+    if (refs.length && baseRef && headRef && refKey(baseRef) !== refKey(headRef)) {
+      const { headOnly, baseOnly, mergeBase } = compareResult(baseRef, headRef);
+      const unlimited = !(state.compareRows > 0);
+      const list = unlimited ? headOnly : headOnly.slice(0, state.compareRows);
+      const remain = unlimited ? 0 : Math.max(0, headOnly.length - list.length);
+      const pre = precomputedFiles(baseRef, headRef);
+
+      const fileBlock = pre
+        ? (pre.files.length
+            ? `<h2 class="h2">文件变更 (${pre.files.length})</h2>
+               <p class="muted small" style="margin-top:0">${esc(pre.from)}；为这两个 ref 的聚合差异</p>
+               ${pre.files.map(fileDiffHtml).join("")}`
+            : `<div class="panel"><div class="panel-hd">文件变更</div><div class="panel-bd"><div class="empty">导出时未缓存文件差异（可能加了 --skip-details）</div></div></div>`)
+        : `<p class="muted small" style="margin-top:0">文件变更：本地无法现算这两个 ref 的 diff，只能对比提交列表；逐文件变更请看分支详情页或 Release 详情页。</p>`;
+
+      const limitOptions = [[150, "最近 150 条"], [300, "最近 300 条"], [600, "最近 600 条"], [0, "全部"]]
+        .map(([v, lab]) => `<option value="${v}"${state.compareLimit === v ? " selected" : ""}>${lab}</option>`)
+        .join("");
+      const toolbar = headOnly.length > 150
+        ? `<div class="filters list-toolbar">
+             <label class="small muted">显示</label>
+             <select id="cmp-limit" aria-label="显示条数">${limitOptions}</select>
+             <span class="small muted">head 独有 ${headOnly.length} 个${remain ? ` · 已显示最近 ${list.length} 条` : ""}</span>
+           </div>`
+        : "";
+      const moreBtn = remain
+        ? `<div class="list-more"><button class="btn" id="cmp-more">加载更多（还有 ${remain} 条）</button></div>`
+        : "";
 
       resultHtml = `
-        <div class="warn-box">本地对比基于已导出的 ${D.commits.length} 条 commit，可能不完整。导出更全的 commit 历史可增大 --max-commits。</div>
         <div class="panel">
-          <div class="panel-hd">${esc(base)} … ${esc(head)} · 约 ${between.length} 个提交</div>
-          <div class="panel-bd" style="padding:0">
-            ${between.map(commitRow).join("") || `<div class="empty">未在镜像中找到这两个点之间的提交</div>`}
+          <div class="panel-hd">${esc(label(baseRef))} … ${esc(label(headRef))}</div>
+          <div class="panel-bd">
+            <div class="row-meta">
+              <span class="stat-add">head 领先 ${headOnly.length} 个提交</span>
+              <span class="stat-del">落后 ${baseOnly.length} 个提交</span>
+              ${mergeBase ? `<span>分叉点 <span class="sha">${shortSha(mergeBase)}</span></span>` : `<span class="small muted">未找到共同祖先（历史可能被截断）</span>`}
+            </div>
           </div>
-        </div>`;
+        </div>
+        ${toolbar}
+        <h2 class="h2">head 独有的提交 (${headOnly.length})</h2>
+        <div class="list" style="margin-bottom:18px">
+          ${list.map(commitRow).join("") || `<div class="empty">head 没有 base 之外的提交${baseOnly.length ? `（head 反而落后 base ${baseOnly.length} 个提交，可把 base / head 对调再看）` : ""}</div>`}
+        </div>
+        ${moreBtn}
+        ${fileBlock}`;
     }
 
     return `
       <h1 class="h1">版本对比</h1>
-      <p class="muted small" style="margin-top:0">选择 base → head，查看导出镜像中落在两者之间的 commit。</p>
-      <div class="filters">
-        <label class="small muted">base</label>
-        <select id="cmp-base">${opts}</select>
-        <label class="small muted">head</label>
-        <select id="cmp-head">${opts}</select>
-        <button class="btn btn-primary" id="cmp-run">对比</button>
-      </div>
+      <p class="muted small" style="margin-top:0">选择 base → head，查看 head 相对 base 的差异（提交级；文件差异仅在有缓存时显示）。</p>
+      ${selectors}
       ${resultHtml}
     `;
   }
@@ -2488,17 +2615,32 @@
       customDays.addEventListener("change", applyCustomDays);
     }
 
+    // 版本对比：base/head 选择 + 结果列表的档位与加载更多（同页显示控制，不入导航历史）
     const cmpRun = $("#cmp-run");
     if (cmpRun) {
       const baseSel = $("#cmp-base");
       const headSel = $("#cmp-head");
-      if (baseSel && !state.compareBase) baseSel.value = D.tags[0] ? D.tags[0].name : "";
-      if (headSel && !state.compareHead) headSel.value = D.tags[1] ? D.tags[1].name : (D.tags[0] ? D.tags[0].name : "");
-      if (baseSel && state.compareBase) baseSel.value = state.compareBase;
-      if (headSel && state.compareHead) headSel.value = state.compareHead;
       cmpRun.addEventListener("click", () => {
         state.compareBase = baseSel.value;
         state.compareHead = headSel.value;
+        // 换对比目标相当于换一批提交：回到当前档位重新看
+        state.compareRows = state.compareLimit > 0 ? state.compareLimit : 0;
+        render();
+      });
+    }
+    const cmpLimitSel = $("#cmp-limit");
+    if (cmpLimitSel) {
+      cmpLimitSel.addEventListener("change", () => {
+        const v = Number(cmpLimitSel.value);
+        state.compareLimit = v;
+        state.compareRows = v > 0 ? v : 0;
+        render();
+      });
+    }
+    const cmpMoreBtn = $("#cmp-more");
+    if (cmpMoreBtn) {
+      cmpMoreBtn.addEventListener("click", () => {
+        state.compareRows = (state.compareRows > 0 ? state.compareRows : 0) + 150;
         render();
       });
     }

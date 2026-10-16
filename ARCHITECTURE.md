@@ -286,6 +286,11 @@ python export.py --repo owner/name --full   # 强制全量
   - 布局抛异常时只降级为一条提示，不拖垮整页；无 `graph.js` 的旧包不渲染图，仅显示分支表。
 - 概览含 GitHub 风格贡献墙：按日统计 Commit（`author_date`）、PR/Issue（`created_at`）、Release（`published_at`）、Tag（前端用同名 Release 日期或对应 commit 日期推断；无法定位则不进墙）。热力图横滑全历史，默认停在最右；色阶按当日总贡献的四分位（少量非零天时用固定阈值）。墙下汇总行可选 1 天 / 7 天 / 30 天 / 90 天 / 365 天 / 从最初 / 自定义天数，只影响汇总数字，不缩放热力图；变更后将墙滚回最右；
 - 详情页支持：PR 文件 diff、Issue 评论、Commit message 与文件、Release compare 摘要、文件树与已缓存文本源码；
+- **版本对比页**：base / head 都可选**分支或标签**（`compareRefs()` 有 `graph.refs` 时复用 `commitRefs()`，旧包退化为纯 tag 列表）。默认 `base` = 默认分支、`head` = 最新 tag（无 tag 则取第一个非默认分支）。
+  - **算法用「可达集合差」而非数组下标切片**：`reachableSet(ref)` 沿 `parents` 回溯得到该 ref 的可达提交集合，`compareResult()` 取 `headSet \ baseSet` 为 head 领先的提交、`baseSet \ headSet` 为落后条数。旧实现用 `commits.js` 的数组下标切片，**对分支根本不成立**（分支独有提交不在 `commits.js` 里，切片只能在主干上近似）；现在经 `commitPool()` 取提交，分支独有提交也能正确对比。
+  - **分叉点**：取「两端都可达的提交里日期最新的那个」近似 merge base；历史被截断时可能找不到，此时显示提示。注意 tag 可能指向**未导出的 stub 提交**（如指向更早的、未在镜像内的 tag），这种情况可达集合只有该 stub 自己，故会显示「领先 0 / 落后 N / 未找到共同祖先」——这是事实正确的表现。
+  - **文件差异只在有预计算时显示**（内网无法现算任意两 ref 的 diff）：`precomputedFiles()` 只认「方向完全一致」的缓存——`branches[].compare`（`base` 为默认分支、`name` 为该分支，即分支详情页用的那份）与 `releases[].compare`（`base` 为上一 tag）。**方向相反时故意不展示**，因为增删会对调、直接展示会误导。相关文案 `--skip-details` 时说明未缓存。
+  - 结果列表复用「档位 + 加载更多」共用模式（`state.compareLimit` / `state.compareRows`，纳入 `snapshot`/`restore`）；切换对比目标时把 `compareRows` 重置回档位值。结果为空且 base 有独有提交时，提示可对调 base / head 再看；
 - 正文中的 `#123` 与同仓库 GitHub 链接会被改写为站内跳转；`/commit/<sha>` 链接是否改写取决于该 sha 是否在提交总池中（不再只认主干）。
 
 ## 5. data/*.js 数据格式
