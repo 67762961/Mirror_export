@@ -345,6 +345,7 @@ window.GH_DATA=window.GH_DATA||{};window.GH_DATA.<name>=<compact-json>;
 | 图片（树内） | `assets/.index.json` 中 path/sha 一致且文件存在 | 跳过下载 |
 | 正文外链图片 | `.index.json` 中 `ext:<url>` 对应文件存在 | 跳过下载，仍写入 `image_map` |
 | Release compare | `published_at` 未变且已有 `compare` | 整块复用 |
+| Release 关联 PR | `body` 每轮重新解析（与 compare 是否命中缓存无关） | `related_pr_nums` → 回填 `related_prs`；命中缓存时也不得缺失 |
 | 分支条目 | `sha` 未变、已有 `compare` 与 `head`、且 `default_branch` 未变 | 整条复用（0 次 API） |
 | 分支列表 | 本轮 `/branches` 请求失败 | **沿用上一轮快照**并在 `meta.file_stats.branches_stale` 标注，不清空 |
 | 分支 commit diff | graph 节点 sha 命中且上轮已有 `files`/`has_diff` | 整块复用（0 次 API，不占预算） |
@@ -354,6 +355,15 @@ window.GH_DATA=window.GH_DATA||{};window.GH_DATA.<name>=<compact-json>;
 > `--skip-details` 永久固化成「已完成」，此后调大 `--max-commit-diffs` 也补不回来。
 > 因此 commit diff 用「`files` 键是否存在」、PR/Issue 用显式 `files_fetched` /
 > `comments_fetched` 标记来表达「已确认」，失败条目一律不带这些成功标记。
+>
+> **跨轮派生字段不得依赖缓存命中分支**：像 `related_pr_nums` 这种「只由本轮已拿到的
+> 数据派生」的字段，必须在复用判断**之前**无条件计算。否则命中缓存时会缺失该字段，
+> 后续回填段（`related_prs`）会把它覆盖成空值，造成静默丢数据。
+>
+> **`meta.image_map` 跨轮合并**：正文图片映射每轮与上一轮**合并**（新结果优先），
+> 并剔除目标文件已不存在的悬空项。这样第二轮带 `--no-assets`、或本轮收集到的 URL
+> 集合为空时，`assets/externals` 里已下载的图片仍能被查看器正确引用，不会整块清空
+> 导致正文图全部裂图。`--full` 全量导出不继承旧映射。
 
 设计意图：多轮导出越跑越快，且旧 commit/diff 不被本轮窗口裁掉。改缓存键或结构时，必须保证旧包仍能被 `parse_data_js` 读回。
 
