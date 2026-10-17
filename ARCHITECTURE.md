@@ -140,7 +140,11 @@ export.export(args)
 12) graph.js（提交池 + 引用表）
       · refs = 分支名/标签名 → sha（来自 branches / tags）
       · nodes = 非主干提交节点（compare 里的独有 commit）+ 悬空占位（stub）
+      · **stub 不得覆盖已有真实记录的 sha**：release compare 的 commits 不进 graph.nodes，
+        必须单独收集 `release_known` 再判断；否则空 stub 会在查看器 commitPool 的 Map 去重中
+        遮蔽真实记录（老 tag 的提交列表变 0 条、详情页空标题）
       · 主干已导出的 sha **不重复存**：查看器运行时把 commits.js 与 graph.nodes 合并成一张表
+      · 查看器合并时**非 stub 优先于 stub**（兼容旧包）
       · 每轮按线上重新派生，**不做跨轮累积**（与 branches 快照语义一致）；
         主干历史仍由 commits.js 无限累积，已合并提交不会丢
 13) 分支独有 commit 逐条 diff（--max-branch-diffs，默认 30）
