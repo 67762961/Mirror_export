@@ -42,6 +42,7 @@ from gui_core import (
     upsert_profile,
 )
 
+from . import theme_manager
 from .icons import app_icon
 from .panels import ExportPage
 from .widgets import TextInputDialog
@@ -103,6 +104,11 @@ class MainWindow(FluentWindowBase):
         self._append_log("-" * 48)
         self._load_defaults()
 
+        # 主题：默认跟随系统，可在右上角按钮里切 浅色 / 深色 / 跟随系统
+        self._theme_name = theme_manager.load_theme()
+        theme_manager.apply_theme(self._theme_name)
+        self._update_theme_tooltip()
+
         self.timer = QTimer(self)
         self.timer.setInterval(80)
         self.timer.timeout.connect(self._poll)
@@ -120,8 +126,23 @@ class MainWindow(FluentWindowBase):
         page.browse_btn.clicked.connect(self._pick_out)
         page.clear_btn.clicked.connect(self._clear_token_cache)
         page.show_token_check.stateChanged.connect(self._toggle_token_visibility)
+        page.theme_btn.clicked.connect(self._toggle_theme)
         page.run_btn.clicked.connect(self._start)
         page.open_btn.clicked.connect(self._open_out)
+
+    # ---------- 主题 ----------
+    def _update_theme_tooltip(self) -> None:
+        self.page.theme_btn.setToolTip(
+            f"主题：{theme_manager.theme_label(self._theme_name)}（点击切换）"
+        )
+
+    def _toggle_theme(self) -> None:
+        """在 跟随系统 → 浅色 → 深色 之间循环，并记住选择。"""
+        self._theme_name = theme_manager.next_theme(self._theme_name)
+        theme_manager.apply_theme(self._theme_name)
+        theme_manager.save_theme(self._theme_name)
+        self._update_theme_tooltip()
+        self._append_log(f"界面主题已切换为「{theme_manager.theme_label(self._theme_name)}」")
 
     # ---------- 组合（仓库 + 输出目录 + Token + 选项） ----------
     def _apply_profile(self, p: dict) -> None:

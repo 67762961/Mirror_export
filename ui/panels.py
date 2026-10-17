@@ -16,12 +16,14 @@ from qfluentwidgets import (
     CaptionLabel,
     CheckBox,
     ComboBox,
+    FluentIcon,
     HeaderCardWidget,
     LineEdit,
     PushButton,
     SingleDirectionScrollArea,
     SpinBox,
     SubtitleLabel,
+    TransparentToolButton,
 )
 
 from .theme import CARD_SPACING, PAGE_MARGIN, ROW_SPACING
@@ -75,7 +77,16 @@ class ExportPage(QWidget):
         layout = QVBoxLayout(head)
         layout.setContentsMargins(0, 0, 0, 2)
         layout.setSpacing(4)
-        layout.addWidget(SubtitleLabel("Mirror_export", head))
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.addWidget(SubtitleLabel("Mirror_export", head))
+        title_row.addStretch(1)
+        # 主题切换（跟随系统 / 浅色 / 深色），当前状态见 tooltip
+        self.theme_btn = TransparentToolButton(FluentIcon.CONSTRACT, head)
+        self.theme_btn.setFixedSize(32, 32)
+        title_row.addWidget(self.theme_btn)
+        layout.addLayout(title_row)
+
         layout.addWidget(
             CaptionLabel("在外网导出自包含静态站，拷入内网后双击 index.html 浏览", head)
         )
