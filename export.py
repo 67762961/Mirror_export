@@ -2211,13 +2211,29 @@ def export(args) -> Path:
             "stub": True,
         }
 
+    # release compare 里的真实提交记录：这些 sha 不能建 stub，
+    # 否则查看器 commitPool 的 Map 去重会让空 stub 遮蔽真实记录（老 tag 的提交全不可见）。
+    # 注意 release compare 的 commits 不进 graph_nodes，故必须单独收集。
+    release_known: set = set()
+    for r in releases:
+        for c in (r.get("compare") or {}).get("commits") or []:
+            sha_c = c.get("sha")
+            if sha_c:
+                release_known.add(sha_c)
+
+    def _add_stub_safe(sha: str) -> None:
+        """建占位，但绝不覆盖「已有真实记录」的 sha。"""
+        if sha and sha in release_known:
+            return
+        _add_stub(sha)
+
     # 引用指向的提交：不在主干池也不在节点池 → 占位（如 compare 失败的领先分支）
     for sha in list(graph_branches.values()) + list(graph_tags.values()):
-        _add_stub(sha)
+        _add_stub_safe(sha)
     # 节点引用的父提交：缺失则占位（导出窗口外 / compare 截断）
     for node in list(graph_nodes.values()):
         for p in node.get("parents") or []:
-            _add_stub(p)
+            _add_stub_safe(p)
 
     # --- 分支独有 commit 的逐条 diff（预算控制 + 增量复用） ---
     # 复用上一轮 graph 节点里已抓到的 diff（按 sha 命中，不消耗预算）。
