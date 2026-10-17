@@ -141,7 +141,7 @@ gh-mirror-67762961-Csv_reader-20260914/
 | 限制 | 原因 / 调节 |
 |------|-------------|
 | 只读 | 不写回 GitHub，内网本来就无外网 |
-| 默认最多 80 PR / 80 Issue / 200 Commit | 控制包体积，可用 `--max-*` 调大 |
+| 默认数量：GUI 80 PR / 80 Issue / 100 Commit / 50 Tag；CLI 为 `--max-prs 0` `--max-issues 0` `--max-tags 0`（0=全部）、`--max-commits 100` | 控制包体积，可用 `--max-*` 调大；CLI 默认不限 PR/Issue/Tag，大仓库请显式限制 |
 | 单文件 >400KB 不缓存正文 | 只保留文件树条目 |
 | 二进制不缓存 | `.mat` / `.png` / `.xlsx` 等仅列路径 |
 | 单张图片 >2MB 不下载 | 树内图与 PR/Issue 正文外链图共用上限；`--no-assets` 则全部跳过 |

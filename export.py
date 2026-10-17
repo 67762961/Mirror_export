@@ -19,7 +19,6 @@ GitHub 只读镜像导出器
 from __future__ import annotations
 
 import argparse
-import base64
 import hashlib
 import json
 import os
@@ -195,6 +194,21 @@ def short_sha(sha: str | None) -> str:
     return (sha or "")[:7]
 
 
+def _http_error_hint(code) -> str:
+    """把常见 HTTP 错误码翻译成可操作提示（供 http_get 的两条出口共用）。"""
+    if code == 401:
+        return "（Token 无效或已过期，请检查 Token）"
+    if code == 403:
+        return "（Token 权限不足或触发限流，请检查 Token 权限 / 稍后重试）"
+    if code == 404:
+        return "（资源不存在，或无权限访问该私有仓库）"
+    if code == 429:
+        return "（请求过于频繁被限流，请稍后重试）"
+    if isinstance(code, int) and code >= 500:
+        return "（GitHub 服务端错误，可稍后重试）"
+    return ""
+
+
 def http_get(url: str, token: str | None, accept: str = "application/vnd.github+json"):
     headers = {
         "Accept": accept,
@@ -222,6 +236,9 @@ def http_get(url: str, token: str | None, accept: str = "application/vnd.github+
                     return json.loads(body.decode("utf-8")), dict(resp.headers)
                 return body, dict(resp.headers)
         except urllib.error.HTTPError as e:
+            # 先记录：任何会 continue 重试的分支都必须更新 last_err，
+            # 否则重试耗尽后报错文案里是 None，无法判断是限流/权限/网络。
+            last_err = e
             if e.code in (403, 429):
                 reset = e.headers.get("X-RateLimit-Reset")
                 if reset:
@@ -231,14 +248,20 @@ def http_get(url: str, token: str | None, accept: str = "application/vnd.github+
                     continue
             if e.code >= 500:
                 time.sleep(BACKOFF ** attempt)
-                last_err = e
                 continue
             detail = e.read().decode("utf-8", errors="replace")[:300]
-            raise RuntimeError(f"HTTP {e.code} for {url}: {detail}") from e
+            raise RuntimeError(
+                f"HTTP {e.code} for {url}{_http_error_hint(e.code)}: {detail}"
+            ) from e
         except urllib.error.URLError as e:
             time.sleep(BACKOFF ** attempt)
             last_err = e
-    raise RuntimeError(f"请求失败 {url}: {last_err}")
+    if last_err is None:
+        raise RuntimeError(f"请求失败 {url}: 重试 {MAX_RETRIES} 次仍未成功（未捕获到具体异常）")
+    # 兜底路径同样附可操作提示：403/429/5xx 走重试耗尽时，光有
+    # "HTTP Error 403: HTTP 403" 用户仍不知道是限流还是权限问题。
+    code = getattr(last_err, "code", None)
+    raise RuntimeError(f"请求失败 {url}{_http_error_hint(code)}: {last_err}")
 
 
 def paginate(url: str, token: str | None, max_items: int, label: str):
@@ -359,7 +382,9 @@ def map_pr(item: dict, files: list | None = None, comments: list | None = None) 
             "sha": (item.get("base") or {}).get("sha"),
             "label": (item.get("base") or {}).get("label"),
         },
-        "merged": bool(item.get("merged_at")) or item.get("state") == "closed" and False,
+        # 只有 merged_at 非空才算已合并。closed PR 可能未合并（直接关闭）或被合并，
+        # 不能用 state == "closed" 推断。
+        "merged": bool(item.get("merged_at")),
         "files": files or [],
         "issue_comments": comments or [],
     }

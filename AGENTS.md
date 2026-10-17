@@ -42,6 +42,9 @@
 - `--max-branch-commits` 主动裁剪时**必须置 `truncated`**（判据：`total > len(keep)`），不能只反映「compare 单次返回上限」；否则用户看到被裁后的条数却没有任何「已截断」提示。前端应显示 `N / total`。`graph.truncated` 由 `cmp_block.truncated` 派生，会自动同步。
 - 分支独有 commit 的逐条 diff 走 `--max-branch-diffs`（默认 30，0=不拉；`--skip-details` 强制为 0）：只为非 stub 节点拉取，按 `author_date` 新→旧排序以保证预算优先给最近提交；命中上一轮 `graph` 节点缓存的**不消耗预算**。预算耗尽后剩余节点只保留骨架（图上不断链），不报错。
 - 查看器查提交一律走 `commitPool()` / `findCommitAnywhere()`（主干 → graph → PR 内 → Release compare 按 sha 去重合并），**禁止再写只查 `D.commits` 的查找**：分支独有提交与未合并 PR 的提交不在 `commits.js` 里，只查主干会让它们点开报「未找到」。Commit 页的 ref 切换（`commitRefs` / `commitsForRef`）从 `graph.refs` 取选项、沿 `parents` 回溯（需带环状保护），无 `graph.js` 的旧包要退回平铺列表。**「可点」判定也要走池**（Release 详情、分支详情、分支树行都用 `findCommitAnywhere`）；但 **stub 节点虽在池中也必须排除**（`!cell.stub`），否则点进去是空提交页。
+- `http_get` 的错误处理：**任何会 `continue` 重试的分支都必须先更新 `last_err`**，否则重试耗尽时报错是 `请求失败 <url>: None`，用户无从判断原因。致命错误与重试耗尽**两条出口**都要附可操作提示（401/403/404/5xx 分别说明 Token/权限/资源/服务端）。禁止只在内层分支写 hint、却让外层兜底路径裸插值 `last_err`。
+- 判断 PR 是否已合并**只能看 `merged_at`**，不能用 `state == "closed"` 推断（closed 可能是直接关闭未合并）。`map_pr` 里曾出现 `... or state == "closed" and False` 这类恒假死代码，看着像处理了 closed 实则无效——清理死代码时优先删掉而不是留着。
+- README 的默认值必须与实现一致：**CLI 与 GUI 的默认数不同**（GUI 80 PR/80 Issue/100 Commit/50 Tag；CLI `--max-prs/--max-issues/--max-tags` 默认 0=全部、`--max-commits 100`）。改默认值时同时改 README 的「限制」表，别只改代码。
 - `commitPool()` 合并时**非 stub 必须优先于 stub**：stub 是「历史未导出」的占位（message/parents 皆空），若它先占住 sha，后面 release compare 里的真实记录会被 Map 去重丢掉 → 老 tag 的提交列表 0 条、详情页空标题。导出侧也要配合：`_add_stub` **不得覆盖已有真实记录的 sha**（release compare 的 commits 不进 `graph.nodes`，必须单独收集 `release_known` 再判断）。
 - release compare 的 commit 条目**必须带 `parents`**（与分支 compare 同口径）：查看器 `reachableSet()` 沿 parents 回溯，缺该字段会让可达集合在此断链，版本对比的落后条数/分叉点失真、Commit 页切到该 tag 看不到更早历史。
 - `asset_rel()` **禁止用 `lstrip("./")`**：它按字符集剥离会把 `.github/banner.png` 变成 `github/banner.png`，而查看器 `mdSrc` 兜底只去掉真正的 `./` 前缀，仍去找 `assets/.github/banner.png` → 内网裂图。只能剥真正的 `./` 前缀与开头 `/`。

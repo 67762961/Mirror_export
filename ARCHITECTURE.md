@@ -190,7 +190,11 @@ python export.py --repo owner/name --full   # 强制全量
 
 关键函数：
 
-- `http_get`：带 Bearer Token、重试、RateLimit 等待；
+- `http_get`：带 Bearer Token、重试、RateLimit 等待。**任何会 `continue` 重试的分支都必须
+  更新 `last_err`**，否则重试耗尽后报错文案是 `... : None`（曾因 403/429 带 `reset` 的分支
+  未赋值而出现），用户无法判断是限流、权限还是网络。两条出口（致命错误 / 重试耗尽）都要附
+  可操作提示：401→Token 无效或过期；403→权限不足或限流；404→资源不存在或无权限；5xx→服务端错误。
+  `409`（空仓库）等特殊码按普通 HTTP 错误处理，不做无限重试。
 - `paginate`：`per_page=100` 翻页，`max_items<=0` 表示尽量拉全；
 - `map_pr` / `map_issue` / `map_commit` / `map_file`：把 GitHub API 裁剪成镜像用的精简结构；
 - `export()` 内 branches 段：分支清单 + 头部摘要 + 与默认分支对比，含纯落后分支的 0 请求快路径；
