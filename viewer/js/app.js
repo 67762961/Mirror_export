@@ -44,6 +44,68 @@
       .replace(/"/g, "&quot;");
   }
 
+  /* ---------- 原始 HTML 白名单净化 ----------
+   * PR/Issue/Release 正文里可以写原始 HTML，这些内容来自 GitHub API，属于外部输入。
+   * 渲染前必须净化：只保留排版类标签与安全属性，丢弃全部 on* 事件属性、
+   * javascript:/vbscript:/data: 协议，以及 style 属性（最稳妥）。
+   * 这是 AGENTS.md「所有从 GitHub 拉取的 HTML/文本在渲染前必须 esc() 或经受控的
+   * processRichHtml()」的落地点。 */
+  const SAFE_TAGS = new Set([
+    "a", "b", "strong", "i", "em", "u", "s", "del", "ins", "mark", "small", "sub", "sup",
+    "code", "pre", "kbd", "samp", "var", "span", "div", "p", "br", "hr", "wbr",
+    "h1", "h2", "h3", "h4", "h5", "h6",
+    "ul", "ol", "li", "dl", "dt", "dd",
+    "blockquote", "q", "cite", "figure", "figcaption", "details", "summary",
+    "table", "thead", "tbody", "tfoot", "tr", "th", "td", "caption", "colgroup", "col",
+    "img", "picture", "source",
+  ]);
+  // 允许保留的属性（其余一律丢弃；on* 由前缀规则单独拦）
+  const SAFE_ATTRS = new Set([
+    "href", "src", "alt", "title", "class", "id", "name", "width", "height",
+    "align", "valign", "colspan", "rowspan", "span", "start", "reversed", "type",
+    "checked", "disabled", "open", "lang", "dir", "datetime", "cite",
+    "data-full-src", "data-lang", "loading",
+  ]);
+
+  function safeUrl(v) {
+    const s = String(v == null ? "" : v).trim();
+    // 去掉用于伪装的空白/控制字符后再判断协议（防 "java\tscript:" 这类绕过）
+    const probe = s.replace(/[\u0000-\u0020\u007f-\u009f]/g, "").toLowerCase();
+    if (/^(?:javascript|vbscript|data|blob|file):/.test(probe)) return false;
+    const m = /^([a-z][a-z0-9+.-]*):/i.exec(probe);
+    if (!m) return true;                                  // 无协议：相对路径 / #锚点 / //cdn
+    return /^(?:https?|mailto|tel)$/.test(m[1].toLowerCase());   // 有协议：仅白名单
+  }
+
+  function sanitizeHtml(html) {
+    let s = String(html == null ? "" : html);
+    // 1) 先整体剔除危险容器（连同内容）
+    s = s.replace(/<(script|iframe|object|embed|link|meta|base|form|frame|frameset|applet)\b[\s\S]*?<\/\1\s*>/gi, "");
+    s = s.replace(/<(script|iframe|object|embed|link|meta|base|form|frame|frameset|applet)\b[^>]*\/?>/gi, "");
+    // 2) 逐标签重建：白名单标签保留（属性再过滤），非白名单标签去掉标签本身
+    s = s.replace(/<\/?([a-zA-Z][\w:-]*)((?:"[^"]*"|'[^']*'|[^>"'])*)\/?>/g, (m, rawName, rawAttrs) => {
+      const name = String(rawName).toLowerCase();
+      const closing = m.charAt(1) === "/";
+      if (!SAFE_TAGS.has(name)) return "";
+      if (closing) return `</${name}>`;
+      let out = `<${name}`;
+      const attrRe = /([a-zA-Z_:][\w:.-]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+)))?/g;
+      let am;
+      while ((am = attrRe.exec(rawAttrs)) !== null) {
+        const an = am[1].toLowerCase();
+        if (an.startsWith("on")) continue;          // 事件属性一律丢弃
+        if (an === "style") continue;               // style 直接丢弃（最稳妥）
+        if (!SAFE_ATTRS.has(an)) continue;
+        const av = am[2] != null ? am[2] : am[3] != null ? am[3] : am[4] != null ? am[4] : "";
+        if ((an === "href" || an === "src") && !safeUrl(av)) continue;
+        out += ` ${an}="${esc(av)}"`;
+      }
+      if (name === "img" || name === "br" || name === "hr" || name === "wbr") return out + " />";
+      return out + ">";
+    });
+    return s;
+  }
+
   function fmtDate(iso) {
     if (!iso) return "—";
     try {
@@ -403,11 +465,9 @@
 
     function restoreHtml(h) {
       return h.replace(/ HB(\d+) /g, (_, idx) => {
-        let block = htmlBlocks[Number(idx)] || "";
-        block = block
-          .replace(/<!--[\s\S]*?-->/g, "")
-          .replace(/<script[\s\S]*?<\/script>/gi, "")
-          .replace(/<iframe[\s\S]*?<\/iframe>/gi, "");
+        // 原始 HTML 来自 GitHub API（外部输入）：必须先经白名单净化，
+        // 只保留排版标签与安全属性，丢弃 on* 事件属性与 javascript: 等协议。
+        let block = sanitizeHtml(htmlBlocks[Number(idx)] || "");
         // 原始 HTML <img> 也走 image_map
         block = rewriteMappedImgSrcs(block);
         return block.replace(/(^|[\s(>])#(\d{1,7})\b/g, (mm, pre, n) => pre + refHtml(n));
