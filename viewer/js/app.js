@@ -2291,7 +2291,8 @@
           : `<span class="gg-ref gg-ref-tag" title="标签">${esc(r.name)}</span>`)
         .join("");
       const title = String(cell.message || "").split("\n")[0];
-      const known = !!findCommitAnywhere(cell.sha);
+      // stub 节点（历史未导出）也在提交总池里，必须排除，否则点进去是空提交页
+      const known = !cell.stub && !!findCommitAnywhere(cell.sha);
       return `
         <div class="gitgraph-row" ${known ? `data-commit="${esc(cell.sha)}"` : 'style="cursor:default"'}>
           <div class="gitgraph-gutter">${G.cellSvg(cell)}</div>
