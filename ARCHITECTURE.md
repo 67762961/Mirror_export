@@ -267,7 +267,7 @@ python export.py --repo owner/name --full   # 强制全量
 | `ui/panels.py` | 导出页布局（滚动区里的表单 + 固定底部的操作栏 / 日志 / 状态栏） |
 | `ui/widgets.py` | SectionCard（无标题卡片）/ FormRow / ProgressPanel / ActionBar / LogPanel / TextInputDialog |
 | `ui/theme.py`、`ui/theme_manager.py`、`ui/icons.py` | 设计令牌、深浅色主题、窗口图标 |
-| `gui_core.py` | **与界面无关**的组合缓存、`__PROGRESS__` 解析、`LogWriter`；界面里**禁止**再写一份 |
+| `gui_core.py` | **与界面无关**的组合缓存、`__PROGRESS__` 解析、日志分级/失败摘要、`LogWriter`；界面里**禁止**再写一份 |
 
 职责：
 
@@ -276,6 +276,18 @@ python export.py --repo owner/name --full   # 强制全量
 - 用 `queue` + `QTimer`（80ms）轮询消费日志与 `__PROGRESS__`；`_apply_progress` 把机器行交给
   `gui_core.parse_progress()` 解析成四段信息，`overall` 缺失时退回 `done/total`（兼容旧 exporter）。
   `__FAIL__` 保留进度条当前位置不清零，便于定位卡在哪一步。
+- **日志分级与完成提示（PR2）**：
+  - 日志行由 `gui_core.classify_log_line()` 归成 `error / warn / cache / success / info`，
+    `ui.theme.LOG_COLORS` 给出 light/dark 两套颜色，`LogPanel` 逐行上色。**每一行都显式着色
+    （含 info）**：`QTextDocument` 里新插入的文本会继承前一个字符的字符格式，只给有色行上色会让
+    错误红串到后面所有行；用空格式重置又会变成纯黑、深色主题下看不见。
+  - 主题变化（手动切换 + `Theme.AUTO` 跟随系统）都要调 `LogPanel.refresh_colors()` 重刷，
+    否则深色底上会留着浅色系颜色。手动切换走 `_toggle_theme`，系统切换走 `qconfig.themeChangedFinished`。
+  - `LogPanel._trim()` 截掉头部 1000 行时必须**同步平移 `_spans`**，否则重刷颜色会错位到别的行。
+  - `__FAIL__` 时用 `gui_core.summarize_failure()` 从**本轮**日志里挑一句摘要（优先 `[错误]` 行，
+    其次任意 error 级行，兜底最后一条），放进状态栏 + 常驻 `InfoBar.error`（`duration=-1`，
+    失败往往要立刻处理）；`__DONE__` 用 `InfoBar.success`（6s）并附「打开输出目录」按钮。
+    `self._run_log` 每轮 `_start()` 重置，避免上一轮的错误被当成本轮原因。
   - 布局（操作栏，从左到右）：**按钮 / 按钮 / 进度条 / 百分比 / 总任务进度 / 阶段内计数 / 说明文本**。
     例如 `▓▓▓░░ 47%  9/15  120/540  文件内容 · src/main.py`：
     - **百分比**列：`overall`；

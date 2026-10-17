@@ -31,6 +31,18 @@ LOG_VISIBLE_LINES = 12
 LOG_FONT_FAMILIES = ("Cascadia Mono", "Consolas", "Courier New")
 LOG_FONT_SIZE = 10
 
+# 日志分级配色（light, dark）。**每一行都显式着色**（含 info）：
+# - 只给「有色行」上色是不够的：新插入的文本会继承前一行的字符格式，错误红会串到后面所有行；
+# - 而用空格式重置又会退回纯黑，深色主题下等于看不见。
+# 所以这里连普通行一起定义，插入/重刷时统一套用。
+LOG_COLORS = {
+    "info": ("#1f2328", "#e6e6e6"),
+    "error": ("#cf222e", "#ff7b72"),
+    "warn": ("#9a6700", "#d29922"),
+    "cache": ("#8250df", "#a371f7"),
+    "success": ("#1a7f37", "#3fb950"),
+}
+
 # 品牌色（用于 Fluent 的强调色）
 BRAND_COLOR = "#0969da"
 
@@ -45,3 +57,13 @@ def log_font() -> QFont:
     font.setPointSize(LOG_FONT_SIZE)
     font.setStyleHint(QFont.StyleHint.Monospace)
     return font
+
+
+def log_color(level: str, dark: bool):
+    """取某个日志级别在当前主题下的颜色；没有定义则返回 None（跟随默认前景色）。"""
+    pair = LOG_COLORS.get(level or "")
+    if not pair:
+        return None
+    from PyQt6.QtGui import QColor
+
+    return QColor(pair[1] if dark else pair[0])
