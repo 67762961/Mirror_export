@@ -172,18 +172,22 @@ def make_throttle(step_pct: int = 1):
     """返回「每跨过 step_pct% 才发一次」的节流判定函数，用于高频循环。
 
     节流状态放在闭包里，progress() 保持无状态，便于测试。
+    ``step_pct`` 必须真正生效：按「跨过的档位」判定（档位 = pct // step_pct），
+    否则传 5 / 50 会静默退化为 1% 刷屏。阶段首尾（done<=0 / done>=total）始终放行。
     """
+    step = max(1, int(step_pct or 1))
 
     def should(stage: str, done: int, total: int) -> bool:
         if done <= 0 or done >= total:
             return True
         pct = int(done * 100 / total) if total else 0
-        if pct != should.last_pct:
-            should.last_pct = pct
+        slot = pct // step            # 跨过的 step 档位号（step=1 时等价于 pct）
+        if slot != should.last_slot:
+            should.last_slot = slot
             return True
         return False
 
-    should.last_pct = -1
+    should.last_slot = -1
     return should
 
 
