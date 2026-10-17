@@ -27,7 +27,8 @@
 ```mermaid
 flowchart LR
     TOKEN["GITHUB_TOKEN\n环境变量 / GUI"] --> EXP["export.py\n导出核心"]
-    GUI["app_gui.py\nTkinter 界面"] --> EXP
+    GUI["app_gui.py + ui/\nFluent 界面"] --> EXP
+    CORE["gui_core.py\n组合缓存 / 进度解析 / 日志队列"] --> GUI
     API["api.github.com"] --> EXP
     EXP --> VIEW["viewer/\nindex.html + css + js"]
     EXP --> DATA["data/*.js\nwindow.GH_DATA"]
@@ -45,7 +46,15 @@ Mirror_export/
 ├── ARCHITECTURE.md                架构与数据流说明
 ├── README.md                      使用说明
 ├── export.py                      导出核心（CLI + 库）
-├── app_gui.py                     图形界面入口
+├── app_gui.py                      GUI 启动器（依赖自检 + QApplication）
+├── gui_core.py                     与界面无关的公共逻辑（组合缓存 / 进度解析 / 日志队列）
+├── ui/                             Fluent 界面层（PyQt6 + PyQt6-Fluent-Widgets）
+│   ├── window.py                   主窗口与控制器（组合 / Token / 导出线程 / 进度 / 锁定）
+│   ├── panels.py                   导出页布局（滚动区内的表单 + 固定底部操作栏与日志）
+│   ├── widgets.py                  表单行 / 进度四段 / 操作栏 / 日志区 / 输入对话框
+│   ├── theme.py                    设计令牌（间距、定宽、日志字体）
+│   ├── theme_manager.py            深浅色（跟随系统 / 手动切换，QSettings 持久化）
+│   └── icons.py                    窗口图标（复用 assets/icon.ico）
 ├── viewer/                        查看器模板（导出时复制到输出目录）
 │   ├── index.html                 壳页面，按序加载 data/*.js 与 js/*.js
 │   ├── css/app.css                GitHub Light 风格样式
@@ -247,17 +256,28 @@ python export.py --repo owner/name --full   # 强制全量
 - 日志的人类可读格式（`  阶段 [done/total pct%] · note`）与 CLI 行为保持不变；
   GUI 与 exporter 版本错配时，任一方缺新字段都能退回旧逻辑，双向兼容。
 
-### 4.2 `app_gui.py`（外网图形界面）
+### 4.2 `app_gui.py` + `ui/`（外网图形界面，PyQt6 + PyQt6-Fluent-Widgets）
+
+分层（改界面代码前先看清边界）：
+
+| 文件 | 职责 |
+|------|------|
+| `app_gui.py` | 只做启动：补 `sys.path`、自检界面依赖（缺 PyQt6 / qfluentwidgets 时用 `MessageBoxW` 给出可操作提示，而不是 windowed exe 里「窗口一闪而退」）、创建 `QApplication` 并拉起主窗口 |
+| `ui/window.py` | 主窗口与控制器：组合读写、Token 掩码、导出线程、进度、控件锁定、对话框 |
+| `ui/panels.py` | 导出页布局（滚动区里的表单 + 固定底部的操作栏 / 日志 / 状态栏） |
+| `ui/widgets.py` | SectionCard（无标题卡片）/ FormRow / ProgressPanel / ActionBar / LogPanel / TextInputDialog |
+| `ui/theme.py`、`ui/theme_manager.py`、`ui/icons.py` | 设计令牌、深浅色主题、窗口图标 |
+| `gui_core.py` | **与界面无关**的组合缓存、`__PROGRESS__` 解析、`LogWriter`；界面里**禁止**再写一份 |
 
 职责：
 
 - 收集 Token / 仓库 / 输出目录 / 数量上限 / 增量与跳过详情等选项；
 - 后台线程调用 `export_mod.export(args)`；
-- 用 `queue` + `after` 轮询消费日志与 `__PROGRESS__`；`_apply_progress` 优先用机器行里的
-  `overall` 设置进度条数值。缺 `overall` 时退回按 `done/total` 计算（兼容旧 exporter）。
+- 用 `queue` + `QTimer`（80ms）轮询消费日志与 `__PROGRESS__`；`_apply_progress` 把机器行交给
+  `gui_core.parse_progress()` 解析成四段信息，`overall` 缺失时退回 `done/total`（兼容旧 exporter）。
   `__FAIL__` 保留进度条当前位置不清零，便于定位卡在哪一步。
-  - 布局（`actions` 栏，从左到右）：**按钮 / 按钮 / 进度条 / 百分比 / 总任务进度 / 阶段内计数 / 说明文本**。
-    例如 `▓▓▓░░ 47%  10/15  120/540  文件内容 · src/main.py`：
+  - 布局（操作栏，从左到右）：**按钮 / 按钮 / 进度条 / 百分比 / 总任务进度 / 阶段内计数 / 说明文本**。
+    例如 `▓▓▓░░ 47%  9/15  120/540  文件内容 · src/main.py`：
     - **百分比**列：`overall`；
     - **总任务进度**列：已完成阶段数 / 本轮总阶段数。正在执行的阶段算「未完成」，
       故阶段开始时显示 `idx-1/N`、该阶段跑满后显示 `idx/N`；
@@ -265,26 +285,31 @@ python export.py --repo owner/name --full   # 强制全量
     - **说明文本**列：`阶段名 · 当前条目`，无任务时置空。
   - 空闲（未导出）时四段分别显示 `0%` / `0/0` / `0/0` / 空，说明文本不占位；
     每次点「开始导出」都会重置这四段，避免残留上一轮的数值。
-  - 两条硬约束，破坏任一条都会让进度条在导出时左右乱跳：
-    1. **进度条与所有计数列都必须在文本框左侧**，且各自定宽（进度条 `length=200`，
-       百分比 `width=5`、总任务 `width=7`、阶段计数 `width=11`）。文本随进度变化长短，
-       若把文本放左边或不定宽，每来一条 `__PROGRESS__` 都会把进度条挤走。
-    2. **列间距统一走 `_GAP`（模块级常量），`columnconfigure` 的 `weight=1` 只给最后的
-       说明列**（col6）；给中间空白列会让进度条被推到很右边、与按钮之间留出大片空白。
+  - 两条硬约束（破坏任一条都会让进度条在导出时左右乱跳）：
+    1. **进度条与三个计数列都定宽**（见 `ui/theme.py` 的 `BAR_WIDTH` / `PCT_WIDTH` /
+       `STAGES_WIDTH` / `COUNT_WIDTH`），**只有最后的说明列吃 stretch**。说明文本长短随进度变化，
+       不定宽就会每来一条 `__PROGRESS__` 把进度条挤走。
+    2. **列间距统一走 `theme.GAP`**（`ActionBar` / `ProgressPanel` 都用它）；stretch 只给
+       `ProgressPanel` 与说明列，别给中间空白列。
+  - **排版取向：紧凑、首屏可见**。分组用无标题卡片 `SectionCard`（`HeaderCardWidget` 那 48px
+    标题栏会把内容大半推进滚动区），分组名走表单左侧的标签列；表单仍必须放在
+    `SingleDirectionScrollArea` 里，但那是小窗口 / 高 DPI 放大的兜底。实测整张表单 **448px**：
+    940×800 及以上窗口不滚动即可看全，940×760 需滚动 40px、940×700 需 100px。
+    操作栏与日志区放在滚动区**之外**固定：日志区高度限制在 130–300px。
 - 参数以**组合（profile）**为单位持久化到 exe 同目录 `gh_token_cache.json`：一个组合 = 仓库 + 输出目录 + Token + 数量上限 + 各选项开关；UI 下拉整体切换（`_apply_profile` 组合→控件），点「保存」/导出成功后写回（`_capture_profile` 控件→组合）。Token 为单行输入框，默认掩码显示，「显示明文」切换明文；真值存于 `_token_plain`，`_resolve_token` 负责把掩码还原成真值。
   - 缓存结构 v2：`{"version":2, "profiles":[{name, repo, out, token, max_*, skip_details, include_contents, force, incremental, last_used}], "active": "<组合名>"}`，最多 20 个组合。
-  - `load_cache()` 兼容 v1（`{"tokens":[...], "last_repo", "last_out"}`），检测到旧结构时调用 `_migrate_v1` 转成组合并立即写回，旧数据不删除。
+  - `load_cache()` 兼容 v1（`{"tokens":[...], "last_repo", "last_out"}`），检测到旧结构时调用 `gui_core.migrate_v1` 转成组合并立即写回，旧数据不删除。
   - 组合的增删改查为 `list_profiles` / `get_profile` / `upsert_profile` / `delete_profile` / `rename_profile` / `active_profile`。
-  - `_migrate_v1` 的要点：用**已生成条数**（`first = not profiles`）而非原始下标判断「首条」，因为 `tokens` 前几项可能因非 dict / 空 token 被 `continue` 跳过；v1 若已含 `max_*` / `skip_details` / `include_contents` / `force` 等字段则一并继承，不退回默认值；重名用 `名称 (2)`、`名称 (3)` 递增去重。
+  - `gui_core.migrate_v1` 的要点：用**已生成条数**（`first = not profiles`）而非原始下标判断「首条」，因为 `tokens` 前几项可能因非 dict / 空 token 被 `continue` 跳过；v1 若已含 `max_*` / `skip_details` / `include_contents` / `force` 等字段则一并继承，不退回默认值；重名用 `名称 (2)`、`名称 (3)` 递增去重。
   - `active_profile()` 在 `active` 失效时按 `last_used` 回落到最近使用的一条；`delete_profile` 删掉当前 active 时把 `active` 置空，正是交给这条回落逻辑。
   - 控件 ↔ 组合的字段搬运只在两处：`_apply_profile`（组合→控件）与 `_capture_profile`（控件→组合），避免字段逻辑散落。`_collect_args()` 仍直接从控件取值，因此**导出核心零影响**。
-  - Token 为单行 `ttk.Entry`（不是下拉框）：真值存于 `_token_plain`，输入框按「显示明文」显示明文或 `mask_token()` 结果；`_resolve_token` 在「输入框内容 == mask_token(_token_plain)」时返回真值（用户没动过），否则以输入框内容为准（用户改了）。`_profile_for_save` 在解析结果为空时保留该组合已存的 Token，避免掩码状态下误清空。
+  - Token 为单行 `LineEdit`（不是下拉框）：真值存于 `_token_plain`，输入框按「显示明文」显示明文或 `mask_token()` 结果；`_resolve_token` 在「输入框内容 == mask_token(_token_plain)」时返回真值（用户没动过），否则以输入框内容为准（用户改了）。`_profile_for_save` 在解析结果为空时保留该组合已存的 Token，避免掩码状态下误清空。
   - `_set_token_field()` 是写 Token 控件的唯一入口（切组合、取环境变量兜底都走它）。
   - 导出期间 `_set_profile_btns_state(False)` 会锁定**组合区与全部导出参数控件**：组合下拉、四个组合按钮、「清除缓存」，以及 `self.param_widgets` 里登记的仓库 / 输出目录 / 浏览… / Token / 显示明文 / 记住到本机缓存 / 四个数量上限 / 四个选项开关。`_poll` 在 `__DONE__` / `__FAIL__` 两个分支都恢复可用。
     - 原因：工作线程在启动时拍下快照、结束后把快照写回磁盘，导出中任何被改动的控件都会在写回时被**静默吞掉**（界面显示新值、缓存里仍是旧值），所以必须锁住全部参数控件，而不只是按钮。
-    - 注意：`ttk.Button` / `tk.Checkbutton` 的 `state="disabled"` 只改行为，**外观取决于 style.map**。`TButton` 必须显式给 `disabled` 映射 `background` / `foreground` / `bordercolor`，否则按钮被禁用了却和可点状态长得一样（本项目曾因此让用户以为「导出中按钮还能用」）。新增控件若要参与导出锁定，记得 `self.param_widgets.append(w)`。
+    - 注意：Fluent 控件的 `setEnabled(False)` 自带可见的禁用外观（不必像 ttk 那样补 `style.map`），但仍然要确认新增控件的禁用态**看得出差别**——本项目曾因按钮被禁用却和可点状态长得一样，让用户以为「导出中按钮还能用」。新增控件若要参与导出锁定，记得 `self.param_widgets.append(w)`。
   - `save_cache()` 用「临时文件 + `os.replace`」原子写出，**返回 bool 表示是否真的写成功**；失败时清理 `.tmp` 残留。调用方（`upsert_profile` 等）必须检查返回值：写盘失败（Program Files / 只读 U 盘 / 磁盘满 / 被杀软锁）要抛出或明确提示，**不得**继续打印「已保存」的假成功日志。
-  - `load_cache()` 遇 JSON 损坏时把原文件改名为 `<名>.json.bad` 备份后再从空缓存开始，避免后续写回直接覆盖掉可恢复的内容。因为这条隔离是**整份文件**级别的，`_normalize_profile` 必须对每个字段做类型防御（含 `name` 用 `str()` 兜底），否则一条脏数据就会让用户看到「0 个组合」且不知原因。
+  - `load_cache()` 遇 JSON 损坏时把原文件改名为 `<名>.json.bad` 备份后再从空缓存开始，避免后续写回直接覆盖掉可恢复的内容。因为这条隔离是**整份文件**级别的，`gui_core.normalize_profile` 必须对每个字段做类型防御（含 `name` 用 `str()` 兜底），否则一条脏数据就会让用户看到「0 个组合」且不知原因。
   - 「清除缓存」会删除缓存文件并调 `_apply_profile(dict(DEFAULT_PROFILE, name=""))` 让**全部控件真正归位**（仓库 / 输出目录 / Token / 数量上限 / 选项），与提示语承诺的范围保持一致。
   - 工作线程的异常处理用 `except BaseException`：`export()` 参数校验失败走 `sys.exit()` 抛 `SystemExit`（`BaseException` 子类），只 `except Exception` 会漏接，导致 `__DONE__` / `__FAIL__` 都不入队、界面永久卡在「导出中…」。`finally` 里还有一次「未发终止信号则补发 `__FAIL__`」的兜底。
 
@@ -421,8 +446,10 @@ window.GH_DATA=window.GH_DATA||{};window.GH_DATA.<name>=<compact-json>;
 
 ## 8. 打包与运行
 
-- 源码运行：`python app_gui.py`（需本机 Tkinter）或 `python export.py ...`；
+- 源码运行：`python app_gui.py`（界面需 `PyQt6` + `PyQt6-Fluent-Widgets`，导出核心仍只要标准库）或 `python export.py ...`；
 - 打包 exe：PyInstaller 打包 `app_gui.py`，并把 `viewer/`、`export.py`、`assets` 图标一并打入；运行时 `sys.frozen` 为真，资源目录为 `_MEIPASS`；
+  - Qt 侧要显式排除用不到的重依赖（`numpy` / `scipy` / `PIL` / `cv2` / `tkinter` / `PyQt6.QtQuick` / `PyQt6.QtQml`），**但必须保留 pywin32（`win32com`）**：`qframelesswindow` 的无边框窗口要 `win32comext.shell`，排掉会启动即崩（实测 `ModuleNotFoundError: win32com`）。实测体积：显式排除后 onefile ≈ 39 MB（不排除 numpy/scipy/PIL 时 ≈ 98 MB，多出来的全是 qfluentwidgets 毛玻璃 `AcrylicBrush` 间接引入的科学计算库）；
+  - 默认用 **Mica（Win11 原生 DWM 背景材质）**，不启用 `AcrylicBrush` 毛玻璃，这样才不需要 numpy/scipy；缺依赖时 `acrylic_label` 自身有 `try/except ImportError` 兜底，毛玻璃自动退化为纯色；
 - `copy_viewer` 从 `app_root()/viewer` 复制到输出目录，**按白名单逐文件复制**（`index.html` / `css/app.css` / `js/app.js` / `js/gitgraph.js`），缺文件会直接报错；新增 viewer 文件必须同步该白名单。
 
 ## 9. 实施约束
@@ -437,7 +464,7 @@ window.GH_DATA=window.GH_DATA||{};window.GH_DATA.<name>=<compact-json>;
 3. 查看器必须继续兼容 `file://`：禁止依赖 `fetch` 拉本地 JSON，必须使用 `data/*.js` 脚本注入。
 3.1 **新增 `viewer/` 下的文件时，必须同步 `export.copy_viewer()` 的白名单**（如 `js/gitgraph.js`），否则导出包缺文件、内网打开即报错；`build_exe.py` 用 `--add-data` 整目录打包 `viewer/`，无需改动。
 4. 新增 CLI 参数时：在 `export.main()` 注册、在 GUI `_collect_args` 映射（若 GUI 需要）、在 README/ARCHITECTURE 同步。
-5. 改 Token 缓存格式时，保持 `gh_token_cache.json` 可读、可清除，且永不进入导出输出目录；新增字段须给默认值，并保证旧版（v1 按 Token 平铺）能被 `_migrate_v1` 迁移，不得丢弃用户已存的 Token。
+5. 改 Token 缓存格式时，保持 `gh_token_cache.json` 可读、可清除，且永不进入导出输出目录；新增字段须给默认值，并保证旧版（v1 按 Token 平铺）能被 `gui_core.migrate_v1` 迁移，不得丢弃用户已存的 Token。
 6. 回归验证建议：
    - 无网打开 `preview/index.html` 检查查看器；
    - 对同一输出目录连续跑两次增量导出，确认缓存命中日志；
