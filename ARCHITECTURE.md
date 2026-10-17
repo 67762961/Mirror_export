@@ -98,6 +98,8 @@ export.export(args)
 2) GET /repos/{repo}                 → meta
 3) tags + releases
 4) 每个 release 对上一 tag compare   → compare.commits / files
+      · base 按「该 release 的 tag_name 在 tags 列表里的下一个 tag」确定（不是用 release 下标）
+      · tags 与 releases 数量/顺序不一致、或存在无 Release 的 tag 时也不会错位/自比
 5) commits（本轮窗口 max_commits）
       · 缓存命中则复用
       · 需要时 GET /commits/{sha} 补 diff
@@ -165,7 +167,7 @@ python export.py --repo owner/name --full   # 强制全量
 | `--token` | 环境变量 | 覆盖 `GITHUB_TOKEN` |
 | `--incremental` / `--full` | 增量开 | 是否复用上次 `data` 缓存 |
 | `--force` | 关 | 允许覆盖非空输出目录 |
-| `--max-prs` / `--max-issues` / `--max-tags` | 0=GUI 默认有上限，CLI 0 表示尽量多 | 数量上限 |
+| `--max-prs` / `--max-issues` / `--max-tags` | 0=不限（GUI 默认有上限，CLI 默认 0 表示尽量多） | 数量上限。**0 一律表示「不限」**；issues 的上限按「真正的 issue 数」计（边翻页边过滤 PR），不受 PR 占比影响 |
 | `--max-branches` | 100 | 最多导出多少个分支；0=全部 |
 | `--max-branch-commits` | 100 | 每个分支最多保留多少条「独有提交」；0=全部 |
 | `--max-branch-diffs` | 30 | 本轮最多为多少条分支独有 commit 拉逐条 diff；0=不拉；`--skip-details` 时强制为 0 |
