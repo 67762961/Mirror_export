@@ -95,9 +95,18 @@ def _now_iso() -> str:
 
 
 def _normalize_profile(raw: dict, fallback_name: str = "") -> dict:
-    """把任意来源的字典补齐成完整组合，缺失字段取默认值。"""
+    """把任意来源的字典补齐成完整组合，缺失字段取默认值。
+
+    对**所有**字段都做类型防御：缓存文件可能被手工编辑，任何一个字段类型不对
+    都不应让整份缓存读不出来（load_cache 的 except 会把整个文件隔离成 .bad）。
+    """
     p = dict(DEFAULT_PROFILE)
-    p["name"] = (raw.get("name") or fallback_name or "").strip()
+    # name 同样要 str() 兜底：直接 .strip() 在 name 是数字/对象时抛 AttributeError，
+    # 会让 load_cache 把整份缓存隔离掉，用户看到「0 个组合」且不知原因。
+    name = raw.get("name")
+    if name is None or name == "":
+        name = fallback_name
+    p["name"] = str(name or "").strip()
     for k in PROFILE_FIELDS:
         if k not in raw:
             continue
@@ -111,7 +120,10 @@ def _normalize_profile(raw: dict, fallback_name: str = "") -> dict:
             p[k] = bool(v)
         else:
             p[k] = ("" if v is None else str(v)).strip()
-    p["last_used"] = str(raw.get("last_used") or "")
+    try:
+        p["last_used"] = str(raw.get("last_used") or "")
+    except Exception:
+        p["last_used"] = ""
     return p
 
 
