@@ -14,21 +14,39 @@ from qfluentwidgets import (
     PrimaryPushButton,
     ProgressBar,
     PushButton,
+    SimpleCardWidget,
     SubtitleLabel,
 )
 
 from .theme import (
     BAR_HEIGHT,
     BAR_WIDTH,
+    CARD_PADDING,
     COUNT_WIDTH,
     FIELD_SPACING,
     GAP,
     LABEL_WIDTH,
     LOG_MAX_LINES,
     PCT_WIDTH,
+    ROW_SPACING,
     STAGES_WIDTH,
     log_font,
 )
+
+
+class SectionCard(SimpleCardWidget):
+    """无标题卡片：省掉 `HeaderCardWidget` 那 48px 标题栏。
+
+    分组靠卡片自身的圆角底色区分，标题空间让给内容 —— 窗口不高时首屏能直接
+    看到全部导出参数，而不是大半藏在滚动区里。内容加到 `bodyLayout`。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setBorderRadius(6)
+        self.bodyLayout = QVBoxLayout(self)
+        self.bodyLayout.setContentsMargins(*CARD_PADDING)
+        self.bodyLayout.setSpacing(ROW_SPACING)
 
 
 class FormRow(QWidget):

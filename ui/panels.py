@@ -1,10 +1,12 @@
 """导出页：只负责布局与控件暴露，业务逻辑全部在 ui.window 的控制器里。
 
 页面结构（单页表单，信息架构与 Tk 版一一对应）：
-    滚动区[ 标题 / 组合 / 导出参数 / 数量上限 / 选项 ] + 固定底部[ 操作栏 / 日志 / 状态栏 ]
+    滚动区[ 标题行 / 组合 / 导出参数 / 数量上限 / 选项 ] + 固定底部[ 操作栏 / 日志 / 状态栏 ]
 
-表单放在纵向滚动区里：窗口矮或系统缩放放大时，卡片不会被压扁成一条（实测 800px
-高的窗口装不下约 1250px 的表单内容，不滚动的话控件会被挤到 0 高度直接看不见）。
+排版取向：**紧凑**。每个分组用无标题卡片（`SectionCard`）而不是带 48px 标题栏的
+`HeaderCardWidget`，分组名走表单左侧的标签列；间距也压到最小。这样即使 800px 高的
+窗口也能一屏看到全部导出参数，不必靠滚轮翻。滚动区仍然保留 —— 小窗口 / 高 DPI 放大时
+它才是兜底，而不是主要浏览方式。
 """
 
 from __future__ import annotations
@@ -17,7 +19,6 @@ from qfluentwidgets import (
     CheckBox,
     ComboBox,
     FluentIcon,
-    HeaderCardWidget,
     LineEdit,
     PushButton,
     SingleDirectionScrollArea,
@@ -26,8 +27,8 @@ from qfluentwidgets import (
     TransparentToolButton,
 )
 
-from .theme import CARD_SPACING, PAGE_MARGIN, ROW_SPACING
-from .widgets import ActionBar, FormRow, LogPanel
+from .theme import CARD_SPACING, FIELD_SPACING, PAGE_MARGIN
+from .widgets import ActionBar, FormRow, LogPanel, SectionCard
 
 
 class ExportPage(QWidget):
@@ -39,7 +40,7 @@ class ExportPage(QWidget):
         self.vBoxLayout.setContentsMargins(*PAGE_MARGIN)
         self.vBoxLayout.setSpacing(CARD_SPACING)
 
-        # 表单区：纵向滚动，空间不够时滚动而不是压缩
+        # 表单区：空间足够时全部可见，不够时才滚动（而不是把卡片压扁）
         self.scroll = SingleDirectionScrollArea(orient=Qt.Orientation.Vertical)
         self.scroll.setWidgetResizable(True)
         body = QWidget()
@@ -77,32 +78,30 @@ class ExportPage(QWidget):
 
     # ---------- 各区块 ----------
     def _build_header(self, parent) -> None:
-        head = QWidget(parent)
-        layout = QVBoxLayout(head)
-        layout.setContentsMargins(0, 0, 0, 2)
-        layout.setSpacing(4)
-        title_row = QHBoxLayout()
-        title_row.setContentsMargins(0, 0, 0, 0)
-        title_row.addWidget(SubtitleLabel("Mirror_export", head))
-        title_row.addStretch(1)
-        # 主题切换（跟随系统 / 浅色 / 深色），当前状态见 tooltip
-        self.theme_btn = TransparentToolButton(FluentIcon.CONSTRACT, head)
-        self.theme_btn.setFixedSize(32, 32)
-        title_row.addWidget(self.theme_btn)
-        layout.addLayout(title_row)
+        """标题行：应用名 + 一句说明 + 主题切换，只占一行。"""
+        row = QWidget(parent)
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(FIELD_SPACING)
 
+        layout.addWidget(SubtitleLabel("Mirror_export", row))
         layout.addWidget(
-            CaptionLabel("在外网导出自包含静态站，拷入内网后双击 index.html 浏览", head)
+            CaptionLabel("在外网导出自包含静态站，拷入内网双击 index.html 浏览", row)
         )
-        self.formLayout.addWidget(head)
+        layout.addStretch(1)
+
+        # 主题切换（跟随系统 / 浅色 / 深色），当前状态见 tooltip
+        self.theme_btn = TransparentToolButton(FluentIcon.CONSTRACT, row)
+        self.theme_btn.setFixedSize(30, 30)
+        layout.addWidget(self.theme_btn)
+
+        self.formLayout.addWidget(row)
 
     def _build_profile_card(self, parent) -> None:
-        card = HeaderCardWidget("组合", parent)
-        box = QVBoxLayout()
-        box.setSpacing(ROW_SPACING)
+        card = SectionCard(parent)
 
         self.profile_combo = ComboBox(card)
-        self.profile_combo.setMinimumWidth(320)
+        self.profile_combo.setMinimumWidth(300)
         self.profile_combo.setPlaceholderText("（还没有组合）")
 
         # 导出期间要禁用这四个按钮：否则用户中途「保存」会被工作线程的旧快照覆盖
@@ -113,39 +112,35 @@ class ExportPage(QWidget):
             PushButton("删除", card),
         ]
 
-        profile_row = FormRow("组合", card)
-        profile_row.add(self.profile_combo, 1)
+        row = FormRow("组合", card)
+        row.add(self.profile_combo, 1)
         for button in self.profile_btns:
-            profile_row.add(button)
-        box.addWidget(profile_row)
-
-        box.addWidget(
+            row.add(button)
+        card.bodyLayout.addWidget(row)
+        card.bodyLayout.addWidget(
             CaptionLabel(
                 "选一个组合即可带出仓库 / 输出目录 / Token / 数量上限与选项；改完点「保存」写回该组合",
                 card,
             )
         )
 
-        card.viewLayout.addLayout(box)
         self.formLayout.addWidget(card)
 
     def _build_params_card(self, parent) -> None:
-        card = HeaderCardWidget("导出参数", parent)
-        box = QVBoxLayout()
-        box.setSpacing(ROW_SPACING)
+        card = SectionCard(parent)
 
         self.repo_edit = LineEdit(card)
         self.repo_edit.setPlaceholderText("owner/repo")
         repo_row = FormRow("仓库", card)
         repo_row.add(self.repo_edit, 1)
-        box.addWidget(repo_row)
+        card.bodyLayout.addWidget(repo_row)
 
         out_row = FormRow("输出目录", card)
         self.out_edit = LineEdit(card)
         self.browse_btn = PushButton("浏览…", card)
         out_row.add(self.out_edit, 1)
         out_row.add(self.browse_btn)
-        box.addWidget(out_row)
+        card.bodyLayout.addWidget(out_row)
 
         token_row = FormRow("Token", card)
         self.token_edit = LineEdit(card)
@@ -153,7 +148,7 @@ class ExportPage(QWidget):
         self.clear_btn = PushButton("清除缓存", card)
         token_row.add(self.token_edit, 1)
         token_row.add(self.clear_btn)
-        box.addWidget(token_row)
+        card.bodyLayout.addWidget(token_row)
 
         extra = FormRow("", card)
         self.show_token_check = CheckBox("显示明文", card)
@@ -161,43 +156,35 @@ class ExportPage(QWidget):
         self.remember_check.setChecked(True)
         extra.add(self.show_token_check)
         extra.add(self.remember_check)
-        box.addWidget(extra)
+        card.bodyLayout.addWidget(extra)
 
-        card.viewLayout.addLayout(box)
         self.formLayout.addWidget(card)
 
     def _build_limits_card(self, parent) -> None:
-        card = HeaderCardWidget("数量上限", parent)
-        box = QVBoxLayout()
-        box.setSpacing(ROW_SPACING)
+        card = SectionCard(parent)
 
         self.max_prs = self._spin(card, 80)
         self.max_issues = self._spin(card, 80)
         self.max_commits = self._spin(card, 100)
         self.max_tags = self._spin(card, 50)
 
-        row = QHBoxLayout()
-        row.setSpacing(24)
-        row.addWidget(self._labeled(card, "PR", self.max_prs))
-        row.addWidget(self._labeled(card, "Issue", self.max_issues))
-        row.addWidget(self._labeled(card, "每轮 Commit", self.max_commits))
-        row.addWidget(self._labeled(card, "Tag", self.max_tags))
-        row.addStretch(1)
-        box.addLayout(row)
-
-        box.addWidget(
+        row = FormRow("数量上限", card)
+        row.contentLayout.setSpacing(18)
+        row.add(self._labeled(card, "PR", self.max_prs))
+        row.add(self._labeled(card, "Issue", self.max_issues))
+        row.add(self._labeled(card, "每轮 Commit", self.max_commits))
+        row.add(self._labeled(card, "Tag", self.max_tags))
+        card.bodyLayout.addWidget(row)
+        card.bodyLayout.addWidget(
             CaptionLabel(
                 "Commit/diff 缓存无限累积；每轮从 HEAD 往回拉这么多条，旧的不删", card
             )
         )
 
-        card.viewLayout.addLayout(box)
         self.formLayout.addWidget(card)
 
     def _build_options_card(self, parent) -> None:
-        card = HeaderCardWidget("选项", parent)
-        box = QVBoxLayout()
-        box.setSpacing(ROW_SPACING)
+        card = SectionCard(parent)
 
         self.skip_details_check = CheckBox("跳过 diff / 评论", card)
         self.include_contents_check = CheckBox("缓存源码", card)
@@ -207,27 +194,25 @@ class ExportPage(QWidget):
         self.incremental_check = CheckBox("增量导出", card)
         self.incremental_check.setChecked(True)
 
-        row = QHBoxLayout()
-        row.setSpacing(22)
+        row = FormRow("选项", card)
+        row.contentLayout.setSpacing(18)
         for widget in (
             self.skip_details_check,
             self.include_contents_check,
             self.force_check,
             self.incremental_check,
         ):
-            row.addWidget(widget)
-        row.addStretch(1)
-        box.addLayout(row)
+            row.add(widget)
+        card.bodyLayout.addWidget(row)
 
-        card.viewLayout.addLayout(box)
         self.formLayout.addWidget(card)
 
     def _build_log(self) -> None:
-        card = HeaderCardWidget("日志", self)
+        card = SectionCard(self)
         self.log = LogPanel(card)
-        self.log.text.setMinimumHeight(140)
+        self.log.text.setMinimumHeight(130)
         self.log.text.setMaximumHeight(300)
-        card.viewLayout.addWidget(self.log)
+        card.bodyLayout.addWidget(self.log)
         self.log_card = card
         self.vBoxLayout.addWidget(card)
 
@@ -237,15 +222,16 @@ class ExportPage(QWidget):
         spin = SpinBox(parent)
         spin.setRange(1, 10000)
         spin.setValue(value)
-        spin.setFixedWidth(110)
+        spin.setFixedWidth(116)  # 再窄就会把数字挤掉（实测 104 时显示成 "8("）
         return spin
 
     @staticmethod
     def _labeled(parent, label: str, widget) -> QWidget:
+        """「说明 + 控件」横排成一组（比上下两行省一个行高）。"""
         box = QWidget(parent)
-        layout = QVBoxLayout(box)
+        layout = QHBoxLayout(box)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
+        layout.setSpacing(6)
         layout.addWidget(CaptionLabel(label, box))
         layout.addWidget(widget)
         return box

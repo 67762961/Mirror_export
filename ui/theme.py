@@ -9,12 +9,13 @@ from __future__ import annotations
 
 from PyQt6.QtGui import QFont
 
-# 页面与卡片
-PAGE_MARGIN = (28, 16, 28, 20)   # 内容区外边距（上边留给标题栏）
-CARD_SPACING = 14                # 卡片之间的垂直间距
-ROW_SPACING = 12                 # 表单行之间
-LABEL_WIDTH = 92                 # 表单左侧标签列宽（各行对齐）
-FIELD_SPACING = 10               # 同一行内控件之间
+# 页面与卡片（整体偏紧凑：去掉卡片标题栏后，首屏要能直接看到全部参数）
+PAGE_MARGIN = (24, 10, 24, 12)   # 内容区外边距（上边留给标题栏）
+CARD_PADDING = (16, 12, 16, 12)  # 卡片内边距
+CARD_SPACING = 10                # 卡片之间的垂直间距
+ROW_SPACING = 8                  # 卡片内各行之间
+LABEL_WIDTH = 72                 # 表单左侧标签列宽（各行对齐）
+FIELD_SPACING = 8                # 同一行内控件之间
 
 # 进度区（沿用 Tk 版教训：进度条与计数列必须定宽，否则说明文本会把它们挤走）
 GAP = 10

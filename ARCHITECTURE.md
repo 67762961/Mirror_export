@@ -265,7 +265,7 @@ python export.py --repo owner/name --full   # 强制全量
 | `app_gui.py` | 只做启动：补 `sys.path`、自检界面依赖（缺 PyQt6 / qfluentwidgets 时用 `MessageBoxW` 给出可操作提示，而不是 windowed exe 里「窗口一闪而退」）、创建 `QApplication` 并拉起主窗口 |
 | `ui/window.py` | 主窗口与控制器：组合读写、Token 掩码、导出线程、进度、控件锁定、对话框 |
 | `ui/panels.py` | 导出页布局（滚动区里的表单 + 固定底部的操作栏 / 日志 / 状态栏） |
-| `ui/widgets.py` | FormRow / ProgressPanel / ActionBar / LogPanel / TextInputDialog |
+| `ui/widgets.py` | SectionCard（无标题卡片）/ FormRow / ProgressPanel / ActionBar / LogPanel / TextInputDialog |
 | `ui/theme.py`、`ui/theme_manager.py`、`ui/icons.py` | 设计令牌、深浅色主题、窗口图标 |
 | `gui_core.py` | **与界面无关**的组合缓存、`__PROGRESS__` 解析、`LogWriter`；界面里**禁止**再写一份 |
 
@@ -291,9 +291,11 @@ python export.py --repo owner/name --full   # 强制全量
        不定宽就会每来一条 `__PROGRESS__` 把进度条挤走。
     2. **列间距统一走 `theme.GAP`**（`ActionBar` / `ProgressPanel` 都用它）；stretch 只给
        `ProgressPanel` 与说明列，别给中间空白列。
-  - **表单必须放在 `SingleDirectionScrollArea` 里**：实测 800px 高的窗口装不下约 1250px 的
-    表单内容，不滚动的话卡片会被压扁、控件高度被挤成 0（屏幕上直接看不见）。操作栏与日志区
-    放在滚动区**之外**固定：日志区高度限制在 140–300px。
+  - **排版取向：紧凑、首屏可见**。分组用无标题卡片 `SectionCard`（`HeaderCardWidget` 那 48px
+    标题栏会把内容大半推进滚动区），分组名走表单左侧的标签列；表单仍必须放在
+    `SingleDirectionScrollArea` 里，但那是小窗口 / 高 DPI 放大的兜底。实测整张表单 **448px**：
+    940×800 及以上窗口不滚动即可看全，940×760 需滚动 40px、940×700 需 100px。
+    操作栏与日志区放在滚动区**之外**固定：日志区高度限制在 130–300px。
 - 参数以**组合（profile）**为单位持久化到 exe 同目录 `gh_token_cache.json`：一个组合 = 仓库 + 输出目录 + Token + 数量上限 + 各选项开关；UI 下拉整体切换（`_apply_profile` 组合→控件），点「保存」/导出成功后写回（`_capture_profile` 控件→组合）。Token 为单行输入框，默认掩码显示，「显示明文」切换明文；真值存于 `_token_plain`，`_resolve_token` 负责把掩码还原成真值。
   - 缓存结构 v2：`{"version":2, "profiles":[{name, repo, out, token, max_*, skip_details, include_contents, force, incremental, last_used}], "active": "<组合名>"}`，最多 20 个组合。
   - `load_cache()` 兼容 v1（`{"tokens":[...], "last_repo", "last_out"}`），检测到旧结构时调用 `gui_core.migrate_v1` 转成组合并立即写回，旧数据不删除。
