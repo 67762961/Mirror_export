@@ -2091,8 +2091,14 @@ def export(args) -> Path:
                             }
                             for c in keep
                         ],
-                        # 超限兜底：compare 单次返回有上限，total > 实际返回即视为截断
-                        "truncated": bool(total and total > len(c_commits)),
+                        # 截断判定要同时覆盖两种来源：
+                        #   ① compare 单次返回有上限（total > 实际返回条数）
+                        #   ② 本次按 --max-branch-commits 主动裁剪（total > 保留条数）
+                        # 只看 ① 会在「独有提交 100 < N <= compare 上限」时漏报，
+                        # 用户看到被裁后的条数却没有任何「已截断」提示。
+                        "truncated": bool(total and total > len(keep)),
+                        # 保留「因 API 上限而截断」的原始语义，供需要区分两种截断的调用方使用
+                        "api_truncated": bool(total and total > len(c_commits)),
                         "files": [] if args.skip_details else [map_file(f) for f in (raw_cmp.get("files") or [])],
                     }
                     if not head and cmp_block["commits"]:

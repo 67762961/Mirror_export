@@ -2424,12 +2424,14 @@
               <span class="stat-add">领先 ${cmp.ahead_by != null ? cmp.ahead_by : "—"} 个提交</span>
               <span class="stat-del">落后 ${cmp.behind_by != null ? cmp.behind_by : "—"} 个提交</span>
               ${cmp.merge_base ? `<span>分叉点 <span class="sha">${shortSha(cmp.merge_base)}</span></span>` : ""}
-              ${cmp.truncated ? `<span class="small muted">（提交列表已截断）</span>` : ""}
+              ${cmp.truncated
+                ? `<span class="small muted">（提交列表已截断，仅显示 ${commits.length} / ${cmp.total_commits != null ? cmp.total_commits : "?"} 条）</span>`
+                : ""}
             </div>
           </div>
         </div>` : ""}
       ${commits.length ? `
-        <h2 class="h2">该分支独有的提交 (${commits.length})</h2>
+        <h2 class="h2">该分支独有的提交 (${cmp.truncated && cmp.total_commits != null ? `${commits.length} / ${cmp.total_commits}` : commits.length})</h2>
         <div class="list" style="margin-bottom:18px">
           ${commits.map((c) => {
             const node = findGraphNode(c.sha);
