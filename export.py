@@ -262,6 +262,44 @@ def paginate(url: str, token: str | None, max_items: int, label: str):
     return items[:max_items]
 
 
+def paginate_skipping(url: str, token: str | None, max_items: int, label: str, skip=None):
+    """按页拉取，**只统计被保留的条目**，凑满 max_items 即停。
+
+    与 ``paginate`` 的区别：``paginate`` 的 ``max_items`` 统计的是原始条目数；
+    这里 ``skip(item)`` 为真的条目会被丢弃且不计数。
+
+    GitHub 的 ``/issues`` 接口会把 PR 也混在列表里，调用方需要按「真正的 issue 数」
+    控制上限。旧实现用 ``max_issues * 2`` 这种倍数启发式，一旦 PR 占比超过一半就会
+    取不够数；这里改为边翻页边过滤，凑满即停（``max_items<=0`` 表示翻到没有为止）。
+    """
+    unlimited = max_items is None or int(max_items) <= 0
+    items = []
+    page = 1
+    sep = "&" if "?" in url else "?"
+    while True:
+        u = f"{url}{sep}per_page=100&page={page}"
+        batch, _ = http_get(u, token)
+        if not batch:
+            break
+        if not isinstance(batch, list):
+            break
+        for it in batch:
+            if skip is not None and skip(it):
+                continue
+            items.append(it)
+            if not unlimited and len(items) >= max_items:
+                return items
+        log(f"  {label}: 已获取 {len(items)}（原始 {page} 页）")
+        if len(batch) < 100:
+            break
+        page += 1
+        # 防御：单次最多 10000 条，避免异常翻页
+        if page > 100:
+            log(f"  [warn] {label}: 已达 10000 条保护上限，停止翻页")
+            break
+    return items
+
+
 def slim_user(u: dict | None) -> dict:
     if not u:
         return {}
@@ -1194,8 +1232,12 @@ def export(args) -> Path:
     prev_releases = {
         r.get("tag_name"): r for r in (prev.get("releases") or []) if r.get("tag_name")
     }
-    # tags 新→旧；每个 release 对上一个 tag 做 compare
+    # tags 新→旧；每个 release 对「它在 tags 里的前一个 tag」做 compare。
+    # 注意：不能用 release 的下标去索引 tags —— 存在没有 Release 的 tag（CI/nightly 很常见），
+    # 或 releases 条数/顺序与 tags 不一致时，下标会错位，导致 base 指向错误的 tag，
+    # 甚至 base == head 自比（total_commits=0、无文件差异）。这里改为按 tag_name 定位。
     tag_names = [t.get("name") for t in tags if t.get("name")]
+    tag_pos = {name: idx for idx, name in enumerate(tag_names)}
     for i, rel in enumerate(releases):
         tag = rel.get("tag_name")
         old = prev_releases.get(tag)
@@ -1213,7 +1255,15 @@ def export(args) -> Path:
             rel["compare"] = old["compare"]
             progress("Release 对比", i + 1, len(releases), f"{tag}（缓存）")
             continue
-        base = tag_names[i + 1] if i + 1 < len(tag_names) else None
+        # base = 该 release 对应 tag 在 tags 列表里的下一个（更旧的）tag；
+        # 找不到该 tag 时退回「按 release 顺序取下一个」，保证旧行为不至于完全失效。
+        pos = tag_pos.get(tag)
+        if pos is not None:
+            base = tag_names[pos + 1] if pos + 1 < len(tag_names) else None
+        else:
+            base = tag_names[i + 1] if i + 1 < len(tag_names) else None
+        if base == tag:
+            base = None   # 防御：绝不与自身对比
         compare = {"base": base, "head": tag, "commits": [], "files": [], "total_commits": 0, "truncated": False}
         if base and not args.skip_details:
             try:
@@ -1499,17 +1549,33 @@ def export(args) -> Path:
     # --- issues（增量） ---
     stage_begin("Issues")
     log("拉取 issues ...")
-    # 按编号（创建顺序）从新到旧拉取；仍过滤 pull_request
-    raw_issues_all = paginate(f"{API}/repos/{repo}/issues?state=all&sort=created&direction=desc", token, args.max_issues * 2, "issues")
+    # 数量上限语义：<=0 表示「不限」（与 --max-prs 一致）。
+    # 注意不能用 `len(issues) >= args.max_issues` 直接判断——当 max_issues=0（CLI 默认）时
+    # 该表达式恒为真，会在第一条 issue 之后就 break，使「0=全部」实际只导出 1 条。
+    issue_limit = int(getattr(args, "max_issues", 0) or 0)
+
+    def issue_limit_reached(n: int) -> bool:
+        return issue_limit > 0 and n >= issue_limit
+
+    # 按编号（创建顺序）从新到旧拉取；边翻页边过滤 pull_request，
+    # 上限按「真正的 issue 数」计，避免 PR 占比高时取不够数（旧实现用 max_issues*2 启发式）。
+    raw_issues_all = paginate_skipping(
+        f"{API}/repos/{repo}/issues?state=all&sort=created&direction=desc",
+        token,
+        issue_limit,
+        "issues",
+        skip=lambda it: bool(it.get("pull_request")),
+    )
     prev_issues = {i.get("number"): i for i in (prev.get("issues") or []) if i.get("number")}
     issues = []
     n_i_reuse = 0
     n_i_fetch = 0
+    # 进度分母用「过滤后的条目数」：paginate_skipping 已剔除 PR，
+    # 这里再滤一次只作防御（保持行为与旧版一致），不应让分母把 PR 算进去。
+    raw_issues_all = [it for it in raw_issues_all if not it.get("pull_request")]
     progress("Issues", 0, len(raw_issues_all), "开始")
     t_issue = make_throttle(1)
     for i, item in enumerate(raw_issues_all, 1):
-        if item.get("pull_request"):
-            continue
         num = item.get("number")
         # 同样放在循环前部：命中缓存的 issue 也要计入进度
         if t_issue("Issues", i, len(raw_issues_all)):
@@ -1534,7 +1600,7 @@ def export(args) -> Path:
         ):
             issues.append(old)
             n_i_reuse += 1
-            if len(issues) >= args.max_issues:
+            if issue_limit_reached(len(issues)):
                 break
             continue
         comments = []
@@ -1565,7 +1631,7 @@ def export(args) -> Path:
         # 继承缓存里的 closed_by_pr（避免每次重查 timeline）
         if incremental and old and "closed_by_pr" in old:
             issues[-1]["closed_by_pr"] = old["closed_by_pr"]
-        if len(issues) >= args.max_issues:
+        if issue_limit_reached(len(issues)):
             break
     issues.sort(key=lambda x: (x.get("number") or 0), reverse=True)
     log(f"  issues: {len(issues)}（详情新拉 {n_i_fetch}, 缓存复用 {n_i_reuse}）")
