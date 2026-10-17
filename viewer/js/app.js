@@ -1935,7 +1935,8 @@
       <div class="list" style="margin-bottom:18px">
         ${commits.length
           ? commits.map((c) => `
-              <div class="row" ${D.commits && D.commits.some((x) => x.sha === c.sha) ? `data-commit="${esc(c.sha)}"` : 'style="cursor:default"'}>
+              <div class="row" ${findCommitAnywhere(c.sha) ? `data-commit="${esc(c.sha)}"` : 'style="cursor:default"'}>
+                <!-- 走提交总池：release compare 的提交常不在 commits.js 里（见 AGENTS 的 commitPool 约定） -->
                 <div class="row-main">
                   <div class="row-title">${esc((c.message || "").split("\n")[0])}</div>
                   <div class="row-meta">
