@@ -1990,15 +1990,19 @@ def export(args) -> Path:
                 "default_branch": default_branch,
             }
 
-            # 增量：sha 与默认分支都未变且上轮已有 compare/head → 整条复用
+            # 增量：sha / 默认分支名 / **主干 tip** 都未变且上轮已有 compare/head → 整条复用
+            # 必须比对主干 tip：ahead_by / behind_by 是相对主干算的，主干前进后旧值就错了。
+            # 旧缓存没有 base_sha 字段时视为不匹配 —— 宁可重拉一次 compare，也不展示陈旧数字。
             old = prev_branches.get(name) if incremental else None
+            old_cmp = (old or {}).get("compare") or {}
             if (
                 old
                 and old.get("sha") == sha
                 and old.get("compare") is not None
                 and old.get("head") is not None
                 and old.get("default_branch") == default_branch
-                and old.get("compare", {}).get("base") == default_branch
+                and old_cmp.get("base") == default_branch
+                and old_cmp.get("base_sha") == main_tip
             ):
                 entry["head"] = old.get("head")
                 entry["compare"] = old.get("compare")
@@ -2033,6 +2037,7 @@ def export(args) -> Path:
                     status = "behind"
                 cmp_block = {
                     "base": default_branch,
+                    "base_sha": main_tip,   # 供增量复用判据比对「主干 tip 是否变过」
                     "ahead_by": ahead,
                     "behind_by": behind,
                     "status": status,
@@ -2068,6 +2073,7 @@ def export(args) -> Path:
                     keep = c_commits[:max_branch_commits] if max_branch_commits > 0 else c_commits
                     cmp_block = {
                         "base": default_branch,
+                        "base_sha": main_tip,   # 供增量复用判据比对「主干 tip 是否变过」
                         "ahead_by": raw_cmp.get("ahead_by"),
                         "behind_by": raw_cmp.get("behind_by"),
                         "status": raw_cmp.get("status"),
@@ -2085,8 +2091,14 @@ def export(args) -> Path:
                             }
                             for c in keep
                         ],
-                        # 超限兜底：compare 单次返回有上限，total > 实际返回即视为截断
-                        "truncated": bool(total and total > len(c_commits)),
+                        # 截断判定要同时覆盖两种来源：
+                        #   ① compare 单次返回有上限（total > 实际返回条数）
+                        #   ② 本次按 --max-branch-commits 主动裁剪（total > 保留条数）
+                        # 只看 ① 会在「独有提交 100 < N <= compare 上限」时漏报，
+                        # 用户看到被裁后的条数却没有任何「已截断」提示。
+                        "truncated": bool(total and total > len(keep)),
+                        # 保留「因 API 上限而截断」的原始语义，供需要区分两种截断的调用方使用
+                        "api_truncated": bool(total and total > len(c_commits)),
                         "files": [] if args.skip_details else [map_file(f) for f in (raw_cmp.get("files") or [])],
                     }
                     if not head and cmp_block["commits"]:
@@ -2105,7 +2117,7 @@ def export(args) -> Path:
             else:
                 # 无法对比（无主干 tip / 与主干同一提交）：保留旧块或写空骨架
                 cmp_block = (old or {}).get("compare") or {
-                    "base": default_branch, "ahead_by": None, "behind_by": None,
+                    "base": default_branch, "base_sha": main_tip, "ahead_by": None, "behind_by": None,
                     "status": None, "merge_base": None, "commits": [], "files": [],
                     "truncated": False,
                 }

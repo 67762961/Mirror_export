@@ -125,12 +125,17 @@ export.export(args)
 11) branches
       · GET /repos/{repo}/branches（--max-branches，默认 100）
       · 每个分支补 head 摘要（能从已导出的 commit 池取到就不发请求）
-      · tip 已包含于主干历史 → 0 次 API，本地算 ahead=0 / behind（标注 behind_approx）
+      · 增量复用判据含「主干 tip」（compare.base_sha == 本轮 main_tip）：ahead/behind 相对主干算，
+        主干前进后必须重拉；旧缓存无 base_sha 视为不匹配
+      · tip 已包含于主干历史 → 0 次 API，本地算 ahead=0 / behind（历史不完整时标注 behind_approx，
+        前端据此显示「约 N」+ 近似提示，避免把下界当精确值）
       · 否则 1 次 GET /compare/{主干tip_sha}...{分支tip_sha}
         → ahead_by / behind_by / status / merge_base_commit
         → commits[]（slim，含 parents，上限 --max-branch-commits）
         → files[]（聚合差异；--skip-details 时为空）
-        → 用 total_commits > 实际返回条数自判 truncated（不硬编码 API 上限）
+        → truncated 判据为 total_commits > **保留条数 len(keep)**：
+          同时覆盖「compare 单次返回上限」与「--max-branch-commits 主动裁剪」两种截断；
+          另存 api_truncated 区分「因 API 上限截断」。前端显示 N / total
       · 分支列表是快照：上游删掉的分支本包不再保留（与 commit 的无限累积相反）
 12) graph.js（提交池 + 引用表）
       · refs = 分支名/标签名 → sha（来自 branches / tags）
@@ -321,7 +326,7 @@ window.GH_DATA=window.GH_DATA||{};window.GH_DATA.<name>=<compact-json>;
 | `tags.js` | array | `name`、`sha` |
 | `releases.js` | array | `tag_name`、`body`、`compare`、`related_prs[]` |
 | `files.js` | object | `tree[]`（path/type/size/sha）、`contents{path→text}`、`truncated` |
-| `branches.js` | array | `name`、`sha`、`protected`、`default`、`default_branch`、`head{message,author_name,author_date}`、`compare{base,ahead_by,behind_by,status,merge_base,commits[],files[],truncated[,behind_approx]}` |
+| `branches.js` | array | `name`、`sha`、`protected`、`default`、`default_branch`、`head{message,author_name,author_date}`、`compare{base,base_sha,total_commits,ahead_by,behind_by,status,merge_base,commits[],files[],truncated,api_truncated[,behind_approx]}` |
 | `graph.js` | object | `default_branch`、`refs{branches{name→sha},tags{name→sha}}`、`nodes[]{sha,message,author_name,author_date,author,parents[],files[]?,stats?{},has_diff?,stub?}`、`truncated` |
 
 `files.contents` 中的路径与 `tree` 一致；图片正文不进 contents，而落到 `assets/<path>`，由查看器按相对路径引用。

@@ -2249,7 +2249,9 @@
             ${b.protected ? `<span class="pill">Protected</span>` : ""}
             <span class="sha" title="${esc(b.sha || "")}">${shortSha(b.sha)}</span>
             ${ahead != null ? `<span class="stat-add">领先 ${ahead}</span>` : ""}
-            ${behind != null ? `<span class="stat-del">落后 ${behind}</span>` : ""}
+            ${behind != null
+              ? `<span class="stat-del"${cmp.behind_approx ? ` title="历史不完整，落后条数为下界"` : ""}>落后 ${cmp.behind_approx ? `约 ${behind}` : behind}</span>`
+              : ""}
             ${summary ? `<span>${summary}</span>` : ""}
           </div>
         </div>
@@ -2422,14 +2424,17 @@
           <div class="panel-bd">
             <div class="row-meta">
               <span class="stat-add">领先 ${cmp.ahead_by != null ? cmp.ahead_by : "—"} 个提交</span>
-              <span class="stat-del">落后 ${cmp.behind_by != null ? cmp.behind_by : "—"} 个提交</span>
+              <span class="stat-del"${cmp.behind_approx ? ` title="历史不完整，落后条数为下界"` : ""}>落后 ${cmp.behind_by != null ? (cmp.behind_approx ? `约 ${cmp.behind_by}` : cmp.behind_by) : "—"} 个提交</span>
+              ${cmp.behind_approx ? `<span class="small muted">（历史不完整，落后条数为近似下界）</span>` : ""}
               ${cmp.merge_base ? `<span>分叉点 <span class="sha">${shortSha(cmp.merge_base)}</span></span>` : ""}
-              ${cmp.truncated ? `<span class="small muted">（提交列表已截断）</span>` : ""}
+              ${cmp.truncated
+                ? `<span class="small muted">（提交列表已截断，仅显示 ${commits.length} / ${cmp.total_commits != null ? cmp.total_commits : "?"} 条）</span>`
+                : ""}
             </div>
           </div>
         </div>` : ""}
       ${commits.length ? `
-        <h2 class="h2">该分支独有的提交 (${commits.length})</h2>
+        <h2 class="h2">该分支独有的提交 (${cmp.truncated && cmp.total_commits != null ? `${commits.length} / ${cmp.total_commits}` : commits.length})</h2>
         <div class="list" style="margin-bottom:18px">
           ${commits.map((c) => {
             const node = findGraphNode(c.sha);
