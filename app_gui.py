@@ -209,16 +209,28 @@ def load_cache() -> dict:
     return empty
 
 
-def save_cache(data: dict) -> None:
-    """原子写出：先写临时文件再替换，避免写一半断电留下坏 JSON。"""
+def save_cache(data: dict) -> bool:
+    """原子写出：先写临时文件再替换，避免写一半断电留下坏 JSON。
+
+    返回是否**真的写成功**。调用方必须据此决定是否提示「已保存」——
+    旧实现内部 `except Exception: pass` 吞掉所有写入错误（exe 放在 Program Files、
+    只读 U 盘、磁盘满、被杀软锁文件等），GUI 却照样打印「组合已保存」，
+    用户以为参数已持久化，重启后全部丢失且全程没有任何错误提示。
+    """
     try:
         tmp = TOKEN_CACHE_FILE.with_name(TOKEN_CACHE_FILE.name + ".tmp")
         tmp.write_text(
             json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         os.replace(tmp, TOKEN_CACHE_FILE)
+        return True
     except Exception:
-        pass
+        # 清理可能残留的临时文件，避免下次误读
+        try:
+            tmp.unlink()
+        except Exception:
+            pass
+        return False
 
 
 def _quarantine_cache() -> str:
@@ -281,7 +293,9 @@ def upsert_profile(profile: dict, make_active: bool = True) -> dict:
     data["version"] = CACHE_VERSION
     if make_active:
         data["active"] = p["name"]
-    save_cache(data)
+    if not save_cache(data):
+        # 写盘失败必须让调用方知道，否则 GUI 会打印「已保存」的假成功日志
+        raise OSError(f"组合缓存写入失败：{TOKEN_CACHE_FILE}")
     return p
 
 
@@ -1232,7 +1246,10 @@ class App(tk.Tk):
                         upsert_profile(snapshot)
                         self.q.put(f"[缓存] 组合「{profile_name}」已保存 → {TOKEN_CACHE_FILE.name}")
                     except Exception as e:
-                        self.q.put(f"[缓存] 组合保存失败：{e}")
+                        # 写盘失败（目录只读 / 磁盘满 / 被杀软锁）必须明确告知，
+                        # 不能让用户以为参数已持久化
+                        self.q.put(f"[缓存] 组合「{profile_name}」保存失败：{e}")
+                        self.q.put("[缓存] 参数仅本次有效，重启后会丢失；请检查程序所在目录是否可写")
                 elif remember:
                     self.q.put("[缓存] 当前未选组合，未保存；可点「另存为…」建一个")
                 self.q.put("__DONE__")
