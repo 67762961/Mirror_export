@@ -2021,10 +2021,18 @@
   /* 导出时预计算好的文件差异：只在「方向完全一致」时可用；
      方向相反时增删会对调，直接展示会误导，故不展示。 */
   function precomputedFiles(baseRef, headRef) {
+    // 必须同时比对 type：仓库里可能存在同名分支与标签（如 main 既是分支又是 tag），
+    // 只比 name 会把「默认分支→某分支」的差异当成「同名 tag→某分支」的结果展示，
+    // 而两者起点对象可能完全不同，增删会误导。refKey() 已区分 type，直接复用。
+    const baseKey = refKey(baseRef);
+    const headKey = refKey(headRef);
     for (const b of (D.branches || [])) {
       const cmp = b.compare || {};
       if (!cmp.base || !b.name) continue;
-      if (cmp.base === baseRef.name && b.name === headRef.name) {
+      // branches[].compare 的语义固定为「默认分支 → 该分支」
+      const bBase = { type: "branch", name: cmp.base };
+      const bHead = { type: "branch", name: b.name };
+      if (refKey(bBase) === baseKey && refKey(bHead) === headKey) {
         return { files: cmp.files || [], from: "导出时已缓存该分支与默认分支的对比" };
       }
     }
@@ -2032,7 +2040,10 @@
       const cmp = r.compare || {};
       const tag = r.tag_name || r.name;
       if (!cmp.base || !tag) continue;
-      if (cmp.base === baseRef.name && tag === headRef.name) {
+      // releases[].compare 的语义固定为「上一 Tag → 该 Tag」
+      const rBase = { type: "tag", name: cmp.base };
+      const rHead = { type: "tag", name: tag };
+      if (refKey(rBase) === baseKey && refKey(rHead) === headKey) {
         return { files: cmp.files || [], from: "导出时已缓存该 Release 与上一 Tag 的对比" };
       }
     }
