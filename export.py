@@ -1772,7 +1772,8 @@ def export(args) -> Path:
 
     files_meta = []
     contents = {}
-    text_count = 0
+    text_count = 0     # 本轮**新下载**的文本数（仅用于日志 / file_stats）
+    text_done = 0      # 本轮**已处理**的文本数（成功 / 失败 / 复用都计入，作为进度分子）
     text_reuse = 0
     skipped = 0
     stage_begin("文件内容", len(text_targets))
@@ -1802,6 +1803,10 @@ def export(args) -> Path:
             ):
                 contents[path] = prev_contents[path]
                 text_reuse += 1
+                text_done += 1
+                # 命中缓存也要计入进度，否则纯增量导出时该阶段纹丝不动
+                if t_text("文件内容", text_done, len(text_targets)):
+                    progress("文件内容", text_done, len(text_targets), f"{path}（缓存）")
                 continue
             try:
                 raw, headers = http_get(t["url"], token, accept="application/vnd.github.raw")
@@ -1811,11 +1816,16 @@ def export(args) -> Path:
                     text = str(raw)
                 contents[path] = text
                 text_count += 1
-                if t_text("文件内容", text_count, len(text_targets)):
-                    progress("文件内容", text_count, len(text_targets), path)
+                text_done += 1
+                if t_text("文件内容", text_done, len(text_targets)):
+                    progress("文件内容", text_done, len(text_targets), path)
             except Exception as e:
+                # 失败也计入进度分子：否则该阶段（权重最高）会零上报、进度条停住
+                text_done += 1
                 skipped += 1
                 log(f"  [warn] 读取 {path} 失败: {e}")
+                if t_text("文件内容", text_done, len(text_targets)):
+                    progress("文件内容", text_done, len(text_targets), f"{path}（失败）")
         elif not is_textish(path) or size > args.max_file_bytes:
             skipped += 1
 
