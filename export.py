@@ -1438,8 +1438,16 @@ def export(args) -> Path:
     stage_begin("Commit diff", len(raw_commits))
     t_commit = make_throttle(1)
     seen2 = set()
-    n_commit_seen = 0
+    n_commit_seen = 0   # 真正写入 commits 的条数（去重后）
+    n_commit_iter = 0   # 遍历到的原始条数（含重复/缺 sha），作为进度分子
     for c in raw_commits:
+        n_commit_iter += 1
+        # 上报点必须在任何 continue 之前，且分子用「遍历条数」：
+        # 分子若用去重后的条数，遇到重复 sha / 缺 sha 时永远小于分母，进度到不了 100%。
+        if t_commit("Commit diff", n_commit_iter, len(raw_commits)):
+            sha0 = c.get("sha") or ""
+            msg0 = ((c.get("commit") or {}).get("message") or "").split("\n")[0]
+            progress("Commit diff", n_commit_iter, len(raw_commits), f"{short_sha(sha0)} {msg0[:48]}")
         sha = c.get("sha")
         if not sha or sha in seen2:
             continue
@@ -1447,9 +1455,6 @@ def export(args) -> Path:
         old = prev_commits.get(sha) if incremental else None
         commits.append(build_entry(c, old))
         n_commit_seen += 1
-        if t_commit("Commit diff", n_commit_seen, len(raw_commits)):
-            msg0 = ((c.get("commit") or {}).get("message") or "").split("\n")[0]
-            progress("Commit diff", n_commit_seen, len(raw_commits), f"{short_sha(sha)} {msg0[:48]}")
     # 极端情况：窗口为空但本轮确实执行了该阶段，补一条 100% 让进度条到位
     if not raw_commits:
         progress("Commit diff", 0, 0, "无新 commit")
