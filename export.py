@@ -1703,26 +1703,31 @@ def export(args) -> Path:
             try:
                 events, _ = http_get(f"{API}/repos/{repo}/issues/{n}/timeline", token)
                 if not isinstance(events, list):
-                    continue
-                for ev in events:
-                    et = ev.get("event")
-                    src = ev.get("source") or {}
-                    src_issue = src.get("issue") or {}
-                    if src_issue.get("pull_request") and et in (
-                        "cross-referenced", "connected", "closed", "referenced"
-                    ):
-                        pr_num = src_issue.get("number")
-                        pr = pr_index.get(pr_num) or {}
-                        closed_by_map[n] = {
-                            "number": pr_num,
-                            "title": pr.get("title") or src_issue.get("title"),
-                            "merged": pr.get("merged"),
-                            "state": pr.get("state") or src_issue.get("state"),
-                            "source": "timeline",
-                        }
-                        break
+                    # 不能 continue：那会跳过下面的 progress()，该轮 done 少记一次，
+                    # 阶段永远到不了 total（GUI 停在 N-1/N）。这里只记 warn，
+                    # 统一在循环末尾上报进度。
+                    log(f"  [warn] issue#{n} timeline 返回非列表，已跳过")
+                else:
+                    for ev in events:
+                        et = ev.get("event")
+                        src = ev.get("source") or {}
+                        src_issue = src.get("issue") or {}
+                        if src_issue.get("pull_request") and et in (
+                            "cross-referenced", "connected", "closed", "referenced"
+                        ):
+                            pr_num = src_issue.get("number")
+                            pr = pr_index.get(pr_num) or {}
+                            closed_by_map[n] = {
+                                "number": pr_num,
+                                "title": pr.get("title") or src_issue.get("title"),
+                                "merged": pr.get("merged"),
+                                "state": pr.get("state") or src_issue.get("state"),
+                                "source": "timeline",
+                            }
+                            break
             except Exception as e:
                 log(f"  [warn] issue#{n} timeline 失败: {e}")
+            # 上报点必须在所有分支之后（不得被 continue 跳过）
             progress("Issue 关联", idx, len(need_timeline), f"issue#{n}")
 
     for iss in issues:
