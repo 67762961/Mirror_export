@@ -1008,7 +1008,7 @@
           <div class="hc-meta">
             <span class="pill ${pr.merged ? "pill-purple" : pr.state === "open" ? "pill-green" : "pill-red"}">${prStateText(pr)}</span>
             <span>${esc((pr.user && pr.user.login) || "")}</span>
-            <span>${fmtDate(pr.updated_at)}</span>
+            <span>${esc(fmtDate(pr.updated_at))}</span>
           </div>
           <div class="hc-body">${esc(String(pr.body || "").slice(0, 160))}${(pr.body || "").length > 160 ? "…" : ""}</div>`;
       } else {
@@ -1021,7 +1021,7 @@
           <div class="hc-meta">
             <span class="pill ${iss.state === "open" ? "pill-green" : "pill-red"}">${issueStateText(iss)}</span>
             <span>${esc((iss.user && iss.user.login) || "")}</span>
-            <span>${fmtDate(iss.updated_at)}</span>
+            <span>${esc(fmtDate(iss.updated_at))}</span>
           </div>
           <div class="hc-body">${esc(String(iss.body || "").slice(0, 160))}${(iss.body || "").length > 160 ? "…" : ""}</div>`;
       }
