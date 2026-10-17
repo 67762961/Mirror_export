@@ -1098,6 +1098,9 @@ class App(tk.Tk):
                 elif line == "__FAIL__":
                     self.progress.stop()
                     self.run_btn.configure(state="normal", text="开始导出")
+                    # 失败时也要放开「打开输出目录」：输出目录里往往已有部分产物，
+                    # 用户需要进去看日志/半成品；此前只有成功分支恢复它，失败后一直灰着。
+                    self.open_btn.configure(state="normal")
                     self._set_profile_btns_state(True)
                     # 保留进度条当前位置，便于定位卡在哪一步
                     self.progress_label.configure(text="失败（进度停在出错处）")
