@@ -6,7 +6,7 @@
 
 | 环境 | 要求 |
 |------|------|
-| 外网 | `dist/Mirror_export.exe`（图形界面，免装 Python），或 Python 3.8+ 跑 `export.py` |
+| 外网 | `dist/Mirror_export.exe`（图形界面，免装 Python），或 Python 3.8+ 跑 `export.py`；源码跑图形界面另需 `PyQt6` + `PyQt6-Fluent-Widgets` |
 | Token | GitHub Personal Access Token，权限勾选 `repo`（私有库） |
 | 内网 | 任意现代浏览器（Chrome / Edge） |
 | 传输 | U 盘 / 文件拷贝 |
@@ -15,7 +15,7 @@
 
 ### 方式 A：图形界面 exe（推荐）
 
-把 `dist/Mirror_export.exe` 拷到外网机器，双击打开：
+把 `dist/Mirror_export.exe` 拷到外网机器，双击打开（Windows 11 Fluent 风格界面，支持跟随系统深浅色，右上角按钮可在 跟随系统 / 浅色 / 深色 之间切换）：
 
 1. **选「组合」**：一个组合 = 仓库 + 输出目录 + Token + 数量上限 + 各选项，选一下就全部带出来
 2. 新建项目：填好各字段后点 **另存为…**，起个名（如 `A项目-产品库`），之后下拉里直接切
@@ -78,6 +78,16 @@
 PR / Issue / Release 正文里的截图（如 `user-attachments`）会下载到 `assets/externals/`，映射写在 `meta.image_map`，内网可离线显示。
 
 ### 方式 B：源码（需要 Python 3.8+）
+
+导出核心 `export.py` 只用标准库；**图形界面**（`app_gui.py` + `ui/`）另需
+`PyQt6` 与 `PyQt6-Fluent-Widgets`：
+
+```powershell
+python -m pip install PyQt6 PyQt6-Fluent-Widgets
+python app_gui.py
+```
+
+只用命令行导出则不需要上面两个包：
 
 ```powershell
 # 1. 进入本目录

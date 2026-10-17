@@ -1,6 +1,6 @@
 ### 项目概况与技术栈
 - 本项目是 Mirror_export（GitHub 内网只读镜像导出工具）：在外网拉取仓库 PR / Issue / Commit / Tag / Release / 文件树，生成可拷入内网、用浏览器离线浏览的自包含静态站。
-- 后端导出基于 Python 3.8+ 标准库（`urllib` / `json` / `argparse`），无 pip 依赖；图形界面使用 Tkinter（`app_gui.py`），可打包为 `dist/Mirror_export.exe`。
+- 后端导出基于 Python 3.8+ 标准库（`urllib` / `json` / `argparse`），无 pip 依赖；图形界面使用 **PyQt6 + PyQt6-Fluent-Widgets**（`app_gui.py` 只做启动，界面在 `ui/`，与界面无关的逻辑在 `gui_core.py`），可打包为 `dist/Mirror_export.exe`。
 - 前端查看器为纯静态 HTML/CSS/JS（`viewer/`），数据以 `data/*.js` 注入 `window.GH_DATA`，兼容 `file://` 协议，无需本地服务器。
 - 内网侧只需任意现代浏览器，不依赖 Python、Node 或网络。
 
@@ -15,7 +15,7 @@
 
 ### 编码规范
 - 导出核心统一放在 `export.py`：HTTP、分页、字段裁剪、增量合并、写出 `data/*.js`。
-- `app_gui.py` 只负责界面与参数收集，通过 `export_mod.export(args)` 调用核心；进度依赖 stdout 中的 `__PROGRESS__{json}` 机器行。
+- 界面分层：`app_gui.py` 只做启动（补 `sys.path` / 依赖自检 / 创建 QApplication），`ui/` 放界面（`window.py` 控制器 + `panels.py` 布局 + `widgets.py` 小组件 + `theme*.py` / `icons.py`），与界面无关的逻辑（组合缓存、`__PROGRESS__` 解析、`LogWriter`）在 `gui_core.py`。**禁止在 `ui/` 里另写一份缓存读写或进度口径**——两条实现必然分叉，那正是这些语义以前反复出问题的地方。界面只通过 `export_mod.export(args)` 调用导出核心；进度依赖 stdout 中的 `__PROGRESS__{json}` 机器行。
 - 进度由 `export.py` 顶部的 `STAGES` 阶段表驱动，**新增阶段必须在此登记**，否则该段进度会缺失；阶段内高频循环用 `make_throttle(1)` 按每 1% 节流上报，且**命中增量缓存的条目也要计入 done**（上报点放在 `continue` 之前），否则纯增量导出时进度条会长时间不动。`_SEEN_STAGES` / `_STAGE_DECLARED` / `_LAST_OVERALL` 是**单轮状态**，同一进程内连续导出（GUI 切换组合再导出）必须在 `export()` 开头调用 `reset_progress()`，否则上一轮遗留的 100% 会让新一轮首帧直接冲到 100%。机器行字段与跳过阶段的折算规则见 ARCHITECTURE.md「进度协议」。
 - 进度上报的三条硬约束（改任何 `progress()` 调用点前先核对）：
   1. **上报点必须在循环体内所有 `continue` 之后/之外**，绝不能被 `continue` 跳过——否则该轮 `done` 少记一次，阶段永远到不了 `total`（GUI 停在 N-1/N）。宁可把上报提到循环体开头（先上报、再做过滤与 `continue`）。
@@ -28,11 +28,12 @@
 - 列表类「档位 + 加载更多」是共用模式，分支树与 Commit 页都按它实现：档位 `150/300/600/全部`（0=全部），每次追加 150；`state.<x>Limit` / `state.<x>Rows` 必须纳入 `snapshot`/`restore`；切换 ref / 视图要重置 `Rows` 回档位值。**搜索时一律不截断**（跨全量匹配并显示全部命中，隐藏档位与加载更多），否则用户要翻很多页才找得到。列表行都挂 `content-visibility: auto` + `contain-intrinsic-size`；不传 `contain-intrinsic-size` 会让滚动条乱跳。
 - `data/*.js` 格式约定：`window.GH_DATA.<name>=<json>;`，JSON 中的 `</` 必须转义为 `<\/`，防止脚本注入。
 - Token 只通过环境变量或 GUI 传入，**禁止写入导出包**；本机 GUI 缓存文件为 exe 同目录的 `gh_token_cache.json`，按**组合**保存（仓库 + 输出目录 + Token + 数量上限 + 选项），支持整体切换与旧版自动迁移。
-- 组合（profile）读写约定：控件 ↔ 组合的字段搬运只允许写在 `_apply_profile` / `_capture_profile` 两处；新增可保存字段时须同时更新 `PROFILE_FIELDS`、`DEFAULT_PROFILE`（给默认值）与 `_migrate_v1` 的继承列表，否则旧缓存会被重置为默认值。Token 写控件统一走 `_set_token_field()`。
-- 导出期间会锁定全部导出参数控件（见 `_set_profile_btns_state` 与 `self.param_widgets`）：因为工作线程结束时把**启动时的快照**写回磁盘，导出中被改动的控件会被静默吞掉。新增任何可编辑参数控件时，必须 `self.param_widgets.append(w)` 登记，否则用户能在导出中改它、改动却丢失。
+- 组合（profile）读写约定：`PROFILE_FIELDS` / `DEFAULT_PROFILE` / `normalize_profile` / `migrate_v1` / `upsert_profile` 等都在 `gui_core.py`；控件 ↔ 组合的字段搬运只允许写在 `_apply_profile` / `_capture_profile` 两处；新增可保存字段时须同时更新 `PROFILE_FIELDS`、`DEFAULT_PROFILE`（给默认值）与 `migrate_v1` 的继承列表，否则旧缓存会被重置为默认值。Token 写控件统一走 `_set_token_field()`。
+- 导出期间会锁定全部导出参数控件（见 `_set_profile_btns_state` 与 `self.param_widgets`）：因为工作线程结束时把**启动时的快照**写回磁盘，导出中被改动的控件会被静默吞掉。新增任何可编辑参数控件时，必须 `self.param_widgets.append(w)` 登记，否则用户能在导出中改它、改动却丢失。Fluent 控件的 `setEnabled(False)` 自带禁用外观，但仍要确认新增控件的禁用态**看得出差别**（历史上出现过「按钮禁用了却和可点状态长得一样」）。
+- 界面观感的两条硬约束（改 `ui/` 前先读）：① 进度区「进度条 + 百分比 + 已完成阶段/总阶段 + 阶段内计数」四者**必须定宽**（见 `ui/theme.py` 的 `BAR_WIDTH` / `PCT_WIDTH` / `STAGES_WIDTH` / `COUNT_WIDTH`），**只有最后的说明列吃 stretch**，否则说明文本长短变化会把进度条推来推去；② 表单**必须放在 `SingleDirectionScrollArea` 里**——实测 800px 高的窗口装不下约 1250px 的表单内容，不滚动的话卡片会被压扁、控件高度被挤成 0（屏幕上直接看不见）。
 - GUI 工作线程的异常处理必须**兜住 `BaseException`**（不能只 `except Exception`）：`export()` 参数校验失败时走 `sys.exit()`，抛的是 `SystemExit`（`BaseException` 子类），漏接会让 `__DONE__` / `__FAIL__` 都不入队 → 界面永久停在「导出中…」、全部控件禁用，只能重启。`__FAIL__` 与 `__DONE__` 两个分支必须恢复同一组控件（含「打开输出目录」）。
 - 缓存写盘结果必须**如实反馈**：`save_cache()` 返回 bool，调用方（`upsert_profile` 等）据此抛错或提示，**禁止**在写盘失败时仍打印「已保存」——程序放在 Program Files / 只读 U 盘 / 磁盘满时用户会以为参数已持久化，重启后全部丢失。
-- `_normalize_profile` 对**每个字段**都要类型防御（含 `name` 用 `str()` 兜底）：`load_cache` 的 `except` 会把整个缓存文件隔离成 `.bad`，一个脏字段就足以让用户看到「0 个组合」且不知原因。
+- `gui_core.normalize_profile` 对**每个字段**都要类型防御（含 `name` 用 `str()` 兜底）：`load_cache` 的 `except` 会把整个缓存文件隔离成 `.bad`，一个脏字段就足以让用户看到「0 个组合」且不知原因。
 - 「清除缓存」等提示语承诺清空的范围，实现必须一致（清完后调 `_apply_profile(dict(DEFAULT_PROFILE, name=""))` 让控件真正归位），否则界面留着旧值、用户点导出会拿残留参数跑一次。
 - 增量导出是默认行为：Commit 按 sha 无限累积、PR/Issue 按 `updated_at` 判断是否复用详情、文件内容与图片按 blob sha 判断变化；改增量逻辑时不得静默丢弃历史缓存。**「失败 ≠ 空结果」是硬约束**：抓取失败或超出预算的条目**不得**写成确定的空结果（commit 不带 `files` 键；PR/Issue 不带 `files_fetched` / `comments_fetched` 标记），否则一次网络抖动或一次 `--skip-details` 会被永久固化成「已完成」，之后调大 `--max-commit-diffs` 也补不回来。新增可增量复用的字段时，必须同时提供「已确认抓到」的成功标记。
 - 请求失败不得被当成空数据写出：`/branches` 等列表请求失败时**沿用上一轮快照**（分支是快照语义，清空会连带摧毁缓存），并在 `meta.file_stats.branches_stale` 标注本轮未刷新。
