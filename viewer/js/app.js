@@ -1935,7 +1935,8 @@
       <div class="list" style="margin-bottom:18px">
         ${commits.length
           ? commits.map((c) => `
-              <div class="row" ${D.commits && D.commits.some((x) => x.sha === c.sha) ? `data-commit="${esc(c.sha)}"` : 'style="cursor:default"'}>
+              <div class="row" ${findCommitAnywhere(c.sha) ? `data-commit="${esc(c.sha)}"` : 'style="cursor:default"'}>
+                <!-- 走提交总池：release compare 的提交常不在 commits.js 里（见 AGENTS 的 commitPool 约定） -->
                 <div class="row-main">
                   <div class="row-title">${esc((c.message || "").split("\n")[0])}</div>
                   <div class="row-meta">
@@ -2020,10 +2021,18 @@
   /* 导出时预计算好的文件差异：只在「方向完全一致」时可用；
      方向相反时增删会对调，直接展示会误导，故不展示。 */
   function precomputedFiles(baseRef, headRef) {
+    // 必须同时比对 type：仓库里可能存在同名分支与标签（如 main 既是分支又是 tag），
+    // 只比 name 会把「默认分支→某分支」的差异当成「同名 tag→某分支」的结果展示，
+    // 而两者起点对象可能完全不同，增删会误导。refKey() 已区分 type，直接复用。
+    const baseKey = refKey(baseRef);
+    const headKey = refKey(headRef);
     for (const b of (D.branches || [])) {
       const cmp = b.compare || {};
       if (!cmp.base || !b.name) continue;
-      if (cmp.base === baseRef.name && b.name === headRef.name) {
+      // branches[].compare 的语义固定为「默认分支 → 该分支」
+      const bBase = { type: "branch", name: cmp.base };
+      const bHead = { type: "branch", name: b.name };
+      if (refKey(bBase) === baseKey && refKey(bHead) === headKey) {
         return { files: cmp.files || [], from: "导出时已缓存该分支与默认分支的对比" };
       }
     }
@@ -2031,7 +2040,10 @@
       const cmp = r.compare || {};
       const tag = r.tag_name || r.name;
       if (!cmp.base || !tag) continue;
-      if (cmp.base === baseRef.name && tag === headRef.name) {
+      // releases[].compare 的语义固定为「上一 Tag → 该 Tag」
+      const rBase = { type: "tag", name: cmp.base };
+      const rHead = { type: "tag", name: tag };
+      if (refKey(rBase) === baseKey && refKey(rHead) === headKey) {
         return { files: cmp.files || [], from: "导出时已缓存该 Release 与上一 Tag 的对比" };
       }
     }
@@ -2068,9 +2080,14 @@
 
     if (refs.length && baseRef && headRef && refKey(baseRef) !== refKey(headRef)) {
       const { headOnly, baseOnly, mergeBase } = compareResult(baseRef, headRef);
+      // 搜索：跨全量匹配、不截断（与 Commit 页的 searching || unlimited 口径一致）
+      const searching = !!state.search;
+      const matched = searching
+        ? headOnly.filter((c) => matchSearch(`${c.sha} ${c.message || ""} ${c.author_name || ""}`))
+        : headOnly;
       const unlimited = !(state.compareRows > 0);
-      const list = unlimited ? headOnly : headOnly.slice(0, state.compareRows);
-      const remain = unlimited ? 0 : Math.max(0, headOnly.length - list.length);
+      const list = (searching || unlimited) ? matched : matched.slice(0, state.compareRows);
+      const remain = (searching || unlimited) ? 0 : Math.max(0, matched.length - list.length);
       const pre = precomputedFiles(baseRef, headRef);
 
       const fileBlock = pre
@@ -2084,13 +2101,13 @@
       const limitOptions = [[150, "最近 150 条"], [300, "最近 300 条"], [600, "最近 600 条"], [0, "全部"]]
         .map(([v, lab]) => `<option value="${v}"${state.compareLimit === v ? " selected" : ""}>${lab}</option>`)
         .join("");
-      const toolbar = headOnly.length > 150
-        ? `<div class="filters list-toolbar">
+      const toolbar = (searching || matched.length <= 150)
+        ? ""
+        : `<div class="filters list-toolbar">
              <label class="small muted">显示</label>
              <select id="cmp-limit" aria-label="显示条数">${limitOptions}</select>
-             <span class="small muted">head 独有 ${headOnly.length} 个${remain ? ` · 已显示最近 ${list.length} 条` : ""}</span>
-           </div>`
-        : "";
+             <span class="small muted">head 独有 ${matched.length} 个${remain ? ` · 已显示最近 ${list.length} 条` : ""}</span>
+           </div>`;
       const moreBtn = remain
         ? `<div class="list-more"><button class="btn" id="cmp-more">加载更多（还有 ${remain} 条）</button></div>`
         : "";
@@ -2290,7 +2307,8 @@
           : `<span class="gg-ref gg-ref-tag" title="标签">${esc(r.name)}</span>`)
         .join("");
       const title = String(cell.message || "").split("\n")[0];
-      const known = !!findCommitAnywhere(cell.sha);
+      // stub 节点（历史未导出）也在提交总池里，必须排除，否则点进去是空提交页
+      const known = !cell.stub && !!findCommitAnywhere(cell.sha);
       return `
         <div class="gitgraph-row" ${known ? `data-commit="${esc(cell.sha)}"` : 'style="cursor:default"'}>
           <div class="gitgraph-gutter">${G.cellSvg(cell)}</div>
@@ -2312,8 +2330,11 @@
     const limitOptions = [[150, "最近 150 条"], [300, "最近 300 条"], [600, "最近 600 条"], [0, "全部"]]
       .map(([v, lab]) => `<option value="${v}"${state.graphLimit === v ? " selected" : ""}>${lab}</option>`)
       .join("");
-    const toolbar = `
-      <div class="filters gitgraph-toolbar">
+    // 搜索时隐藏档位与「加载更多」（与 Commit 页一致：搜索跨全量、不截断）
+    const searchingGraph = !!state.search;
+    const toolbar = searchingGraph
+      ? ""
+      : `<div class="filters gitgraph-toolbar">
         <label class="small muted">显示</label>
         <select id="graph-limit" aria-label="显示条数">${limitOptions}</select>
         <span class="small muted">共 ${total} 个提交${remain ? ` · 已显示最近 ${shown} 条` : ""}</span>

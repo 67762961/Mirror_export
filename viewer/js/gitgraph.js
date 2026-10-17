@@ -319,7 +319,9 @@
       }
 
       if (lane > maxLane) maxLane = lane;
-      if (lane >= maxLanes) overflow = true;
+      // 判「整行泳道数」而不是「本行提交所在泳道号」：
+      // 某行同时活跃的泳道可能比提交自身更靠右，只看 lane 会漏报横向溢出。
+      if (laneCount > maxLanes) overflow = true;
 
       cells.push({
         sha: sha,
