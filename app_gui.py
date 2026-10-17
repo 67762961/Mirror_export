@@ -1028,7 +1028,13 @@ class App(tk.Tk):
         self._profile_names = {}
         self.profile_var.set("")
         self.profile_combo.configure(values=[])
-        self._append_log("已清除本机组合缓存")
+        # 提示语承诺「仓库、输出目录、Token 与各选项都会被清空」，因此控件也要真的归位，
+        # 否则用户以为清空了、实际界面仍留着旧值（此时点导出会拿残留参数跑一次）。
+        try:
+            self._apply_profile(dict(DEFAULT_PROFILE, name=""))
+        except Exception:
+            pass
+        self._append_log("已清除本机组合缓存（仓库 / 输出目录 / Token / 数量上限 / 选项均已恢复默认）")
 
     def _pick_out(self):
         d = filedialog.askdirectory(title="选择输出目录")
