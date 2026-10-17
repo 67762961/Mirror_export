@@ -359,7 +359,9 @@ def map_pr(item: dict, files: list | None = None, comments: list | None = None) 
             "sha": (item.get("base") or {}).get("sha"),
             "label": (item.get("base") or {}).get("label"),
         },
-        "merged": bool(item.get("merged_at")) or item.get("state") == "closed" and False,
+        # 只有 merged_at 非空才算已合并。closed PR 可能未合并（直接关闭）或被合并，
+        # 不能用 state == "closed" 推断。
+        "merged": bool(item.get("merged_at")),
         "files": files or [],
         "issue_comments": comments or [],
     }
