@@ -373,6 +373,13 @@ window.GH_DATA=window.GH_DATA||{};window.GH_DATA.<name>=<compact-json>;
 
 1. **Token**：只在外网进程内使用；导出包与 `data/*` 不含认证信息。
 2. **XSS**：viewer 渲染外部 HTML 前必须 `esc()` 或 `processRichHtml()`；`js_assign` 对 `</` 做转义。
+   - **正文原始 HTML 走白名单净化**：`mdToHtml()` 提取出的原始 HTML 块先经 `sanitizeHtml()`
+     （`viewer/js/app.js` 顶部）—— 只保留 `SAFE_TAGS` 内的排版标签与 `SAFE_ATTRS` 内的属性，
+     丢弃全部 `on*` 事件属性、`style` 属性，以及 `javascript:` / `vbscript:` / `data:` /
+     `blob:` / `file:` 协议（含用空白/控制字符混淆的写法）。
+   - 新增可渲染标签或属性时必须同步加进这两个白名单；**禁止**退回「黑名单只删
+     script/iframe」的实现（旧实现正是这样漏掉了 `onclick` / `ontoggle` / `svg onload`）。
+   - 其它 `window.open` 出口（如右键「打开原图」）也必须校验协议，只放行 http(s)/file。
 3. **体积**：
    - 默认 GUI：80 PR / 80 Issue / 100 commits/轮 / 50 tags；
    - 单文件 >400KB 不缓存正文；
