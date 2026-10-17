@@ -36,6 +36,9 @@ API = "https://api.github.com"
 MAX_RETRIES = 3
 BACKOFF = 2.0
 
+# release compare 单轮最多保留多少条 commit（与分支 compare 的裁剪口径保持独立可调）
+RELEASE_COMPARE_MAX_COMMITS = 100
+
 BINARY_EXT = {
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".bmp", ".tif", ".tiff",
     ".pdf", ".zip", ".7z", ".rar", ".tar", ".gz", ".bz2", ".xz",
@@ -1282,7 +1285,10 @@ def export(args) -> Path:
                 raw_cmp, _ = http_get(cmp_url, token)
                 c_commits = raw_cmp.get("commits") or []
                 compare["total_commits"] = raw_cmp.get("total_commits") or len(c_commits)
-                # 只保留列表展示需要的字段
+                # 只保留列表展示需要的字段。
+                # 必须带 parents：查看器 reachableSet() 沿 parents 回溯，
+                # 缺该字段会让可达集合在此断链（版本对比的落后/分叉点失真、
+                # Commit 页切到该 tag 也看不到更早历史）。与分支 compare 口径一致。
                 compare["commits"] = [
                     {
                         "sha": c.get("sha"),
@@ -1290,8 +1296,9 @@ def export(args) -> Path:
                         "author_name": ((c.get("commit") or {}).get("author") or {}).get("name"),
                         "author_date": ((c.get("commit") or {}).get("author") or {}).get("date"),
                         "author": slim_user(c.get("author")),
+                        "parents": [p.get("sha") for p in (c.get("parents") or []) if p.get("sha")],
                     }
-                    for c in c_commits[:100]
+                    for c in c_commits[:RELEASE_COMPARE_MAX_COMMITS]
                 ]
                 compare["files"] = [map_file(f) for f in (raw_cmp.get("files") or [])[:200]]
                 compare["ahead_by"] = raw_cmp.get("ahead_by")
