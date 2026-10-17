@@ -1083,7 +1083,18 @@ def copy_viewer(viewer_src: Path, out: Path) -> None:
 
 
 def asset_rel(path: str) -> str:
-    return path.replace("\\", "/").lstrip("./")
+    """把仓库内路径转成 assets 下的相对路径（统一正斜杠）。
+
+    注意**不能用** ``lstrip("./")``：它按字符集剥离，会把 ``.github/banner.png``
+    开头的 ``.`` 也吃掉，得到 ``github/banner.png``；而查看器 mdSrc 的兜底只去掉
+    真正的 ``./`` 前缀，仍去找 ``assets/.github/banner.png`` → 内网裂图。
+    这里只剥真正的 ``./`` 前缀与开头的 ``/``，保留点目录。
+    """
+    rel = path.replace("\\", "/")
+    while rel.startswith("./"):
+        rel = rel[2:]
+    rel = rel.lstrip("/")
+    return rel
 
 
 def merge_image_map(prev_map: dict | None, new_map: dict | None, out: Path) -> dict:
