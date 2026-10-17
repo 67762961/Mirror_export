@@ -172,18 +172,22 @@ def make_throttle(step_pct: int = 1):
     """返回「每跨过 step_pct% 才发一次」的节流判定函数，用于高频循环。
 
     节流状态放在闭包里，progress() 保持无状态，便于测试。
+    ``step_pct`` 必须真正生效：按「跨过的档位」判定（档位 = pct // step_pct），
+    否则传 5 / 50 会静默退化为 1% 刷屏。阶段首尾（done<=0 / done>=total）始终放行。
     """
+    step = max(1, int(step_pct or 1))
 
     def should(stage: str, done: int, total: int) -> bool:
         if done <= 0 or done >= total:
             return True
         pct = int(done * 100 / total) if total else 0
-        if pct != should.last_pct:
-            should.last_pct = pct
+        slot = pct // step            # 跨过的 step 档位号（step=1 时等价于 pct）
+        if slot != should.last_slot:
+            should.last_slot = slot
             return True
         return False
 
-    should.last_pct = -1
+    should.last_slot = -1
     return should
 
 
@@ -1434,8 +1438,16 @@ def export(args) -> Path:
     stage_begin("Commit diff", len(raw_commits))
     t_commit = make_throttle(1)
     seen2 = set()
-    n_commit_seen = 0
+    n_commit_seen = 0   # 真正写入 commits 的条数（去重后）
+    n_commit_iter = 0   # 遍历到的原始条数（含重复/缺 sha），作为进度分子
     for c in raw_commits:
+        n_commit_iter += 1
+        # 上报点必须在任何 continue 之前，且分子用「遍历条数」：
+        # 分子若用去重后的条数，遇到重复 sha / 缺 sha 时永远小于分母，进度到不了 100%。
+        if t_commit("Commit diff", n_commit_iter, len(raw_commits)):
+            sha0 = c.get("sha") or ""
+            msg0 = ((c.get("commit") or {}).get("message") or "").split("\n")[0]
+            progress("Commit diff", n_commit_iter, len(raw_commits), f"{short_sha(sha0)} {msg0[:48]}")
         sha = c.get("sha")
         if not sha or sha in seen2:
             continue
@@ -1443,9 +1455,6 @@ def export(args) -> Path:
         old = prev_commits.get(sha) if incremental else None
         commits.append(build_entry(c, old))
         n_commit_seen += 1
-        if t_commit("Commit diff", n_commit_seen, len(raw_commits)):
-            msg0 = ((c.get("commit") or {}).get("message") or "").split("\n")[0]
-            progress("Commit diff", n_commit_seen, len(raw_commits), f"{short_sha(sha)} {msg0[:48]}")
     # 极端情况：窗口为空但本轮确实执行了该阶段，补一条 100% 让进度条到位
     if not raw_commits:
         progress("Commit diff", 0, 0, "无新 commit")
@@ -1699,26 +1708,31 @@ def export(args) -> Path:
             try:
                 events, _ = http_get(f"{API}/repos/{repo}/issues/{n}/timeline", token)
                 if not isinstance(events, list):
-                    continue
-                for ev in events:
-                    et = ev.get("event")
-                    src = ev.get("source") or {}
-                    src_issue = src.get("issue") or {}
-                    if src_issue.get("pull_request") and et in (
-                        "cross-referenced", "connected", "closed", "referenced"
-                    ):
-                        pr_num = src_issue.get("number")
-                        pr = pr_index.get(pr_num) or {}
-                        closed_by_map[n] = {
-                            "number": pr_num,
-                            "title": pr.get("title") or src_issue.get("title"),
-                            "merged": pr.get("merged"),
-                            "state": pr.get("state") or src_issue.get("state"),
-                            "source": "timeline",
-                        }
-                        break
+                    # 不能 continue：那会跳过下面的 progress()，该轮 done 少记一次，
+                    # 阶段永远到不了 total（GUI 停在 N-1/N）。这里只记 warn，
+                    # 统一在循环末尾上报进度。
+                    log(f"  [warn] issue#{n} timeline 返回非列表，已跳过")
+                else:
+                    for ev in events:
+                        et = ev.get("event")
+                        src = ev.get("source") or {}
+                        src_issue = src.get("issue") or {}
+                        if src_issue.get("pull_request") and et in (
+                            "cross-referenced", "connected", "closed", "referenced"
+                        ):
+                            pr_num = src_issue.get("number")
+                            pr = pr_index.get(pr_num) or {}
+                            closed_by_map[n] = {
+                                "number": pr_num,
+                                "title": pr.get("title") or src_issue.get("title"),
+                                "merged": pr.get("merged"),
+                                "state": pr.get("state") or src_issue.get("state"),
+                                "source": "timeline",
+                            }
+                            break
             except Exception as e:
                 log(f"  [warn] issue#{n} timeline 失败: {e}")
+            # 上报点必须在所有分支之后（不得被 continue 跳过）
             progress("Issue 关联", idx, len(need_timeline), f"issue#{n}")
 
     for iss in issues:
@@ -1768,7 +1782,8 @@ def export(args) -> Path:
 
     files_meta = []
     contents = {}
-    text_count = 0
+    text_count = 0     # 本轮**新下载**的文本数（仅用于日志 / file_stats）
+    text_done = 0      # 本轮**已处理**的文本数（成功 / 失败 / 复用都计入，作为进度分子）
     text_reuse = 0
     skipped = 0
     stage_begin("文件内容", len(text_targets))
@@ -1798,6 +1813,10 @@ def export(args) -> Path:
             ):
                 contents[path] = prev_contents[path]
                 text_reuse += 1
+                text_done += 1
+                # 命中缓存也要计入进度，否则纯增量导出时该阶段纹丝不动
+                if t_text("文件内容", text_done, len(text_targets)):
+                    progress("文件内容", text_done, len(text_targets), f"{path}（缓存）")
                 continue
             try:
                 raw, headers = http_get(t["url"], token, accept="application/vnd.github.raw")
@@ -1807,11 +1826,16 @@ def export(args) -> Path:
                     text = str(raw)
                 contents[path] = text
                 text_count += 1
-                if t_text("文件内容", text_count, len(text_targets)):
-                    progress("文件内容", text_count, len(text_targets), path)
+                text_done += 1
+                if t_text("文件内容", text_done, len(text_targets)):
+                    progress("文件内容", text_done, len(text_targets), path)
             except Exception as e:
+                # 失败也计入进度分子：否则该阶段（权重最高）会零上报、进度条停住
+                text_done += 1
                 skipped += 1
                 log(f"  [warn] 读取 {path} 失败: {e}")
+                if t_text("文件内容", text_done, len(text_targets)):
+                    progress("文件内容", text_done, len(text_targets), f"{path}（失败）")
         elif not is_textish(path) or size > args.max_file_bytes:
             skipped += 1
 

@@ -17,6 +17,10 @@
 - 导出核心统一放在 `export.py`：HTTP、分页、字段裁剪、增量合并、写出 `data/*.js`。
 - `app_gui.py` 只负责界面与参数收集，通过 `export_mod.export(args)` 调用核心；进度依赖 stdout 中的 `__PROGRESS__{json}` 机器行。
 - 进度由 `export.py` 顶部的 `STAGES` 阶段表驱动，**新增阶段必须在此登记**，否则该段进度会缺失；阶段内高频循环用 `make_throttle(1)` 按每 1% 节流上报，且**命中增量缓存的条目也要计入 done**（上报点放在 `continue` 之前），否则纯增量导出时进度条会长时间不动。`_SEEN_STAGES` / `_STAGE_DECLARED` / `_LAST_OVERALL` 是**单轮状态**，同一进程内连续导出（GUI 切换组合再导出）必须在 `export()` 开头调用 `reset_progress()`，否则上一轮遗留的 100% 会让新一轮首帧直接冲到 100%。机器行字段与跳过阶段的折算规则见 ARCHITECTURE.md「进度协议」。
+- 进度上报的三条硬约束（改任何 `progress()` 调用点前先核对）：
+  1. **上报点必须在循环体内所有 `continue` 之后/之外**，绝不能被 `continue` 跳过——否则该轮 `done` 少记一次，阶段永远到不了 `total`（GUI 停在 N-1/N）。宁可把上报提到循环体开头（先上报、再做过滤与 `continue`）。
+  2. **分子必须是「已处理条数」而非「成功条数」**：失败、跳过、命中缓存的条目都要 `+1`，且分母用**原始遍历条数**。用「去重后 / 成功数」当分子时，只要出现重复 sha、缺字段或失败，分子就永远小于分母。
+  3. `make_throttle(step_pct)` **必须真正按 step_pct 节流**（档位 = `pct // step`）：契约若失效，传 5/50 会静默退化为 1% 刷屏。阶段首尾（`done<=0`、`done>=total`）始终放行。
 - 查看器数据文件命名固定：`meta` / `prs` / `issues` / `commits` / `tags` / `releases` / `files` / `branches` / `graph`；新增数据集时须同步更新 `export.py` 的 `writes`、`manifest.json`、`viewer/index.html` 的 script 标签。
 - **新增 `viewer/` 下的文件时，必须同步 `export.copy_viewer()` 的白名单**（`index.html` / `css/app.css` / `js/app.js` / `js/gitgraph.js`），否则导出包缺文件、内网打开直接报错（`build_exe.py` 整目录打包 `viewer/`，无需改）。分支树的布局算法放在 `viewer/js/gitgraph.js`，是**无 DOM 依赖的纯函数**（拓扑排序 / 泳道分配 / SVG 生成），须保持可在 Node 里直接单测；渲染拼接只写在 `app.js`。
 - 分支树的观感约定（改样式时注意这几条联动，改一处要同步另一处）：① `gitgraph.js` 的 `ROW_H` 必须等于 css `.gitgraph-row` 的 `height`，且**分隔线只能用 `box-shadow` 不能用 `border`**——`border` 占掉 1px 内容高度会让相邻行 SVG 出现缝隙、竖线被截断成虚线；② 配色只在 css `.gg-c0..7` 里用 `--gg-c` / `--gg-bg` 定义一次，连线、圆点、标签都引用它，禁止各写一遍颜色；③ 跨泳道连线用三次贝塞尔曲线、同泳道用直线，控制点系数用 `TANGENT_K = 0.5523`（四分之一圆逼近值）且 `LANE_W≈ROW_H/2`，否则拐角发扁像折线；合并提交用更大的空心圆；④ **颜色跟「分支线」走、不跟泳道号**，并在**分支头处切换色号**（色号 0 固定给默认分支，其余 1..7 循环）；⑤ 泳道必须**回收复用**，保证「PR 拉出再合并回主干」只占 1 条泳道宽度。
