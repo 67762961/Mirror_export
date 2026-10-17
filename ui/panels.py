@@ -42,12 +42,16 @@ class ExportPage(QWidget):
         # 表单区：纵向滚动，空间不够时滚动而不是压缩
         self.scroll = SingleDirectionScrollArea(orient=Qt.Orientation.Vertical)
         self.scroll.setWidgetResizable(True)
-        self.scroll.enableTransparentBackground()
-        body = QWidget(self.scroll)
+        body = QWidget()
         self.formLayout = QVBoxLayout(body)
         self.formLayout.setContentsMargins(0, 0, 8, 0)  # 右侧给滚动条留空
         self.formLayout.setSpacing(CARD_SPACING)
         self.scroll.setWidget(body)
+        # 透明必须**在 setWidget 之后**做：qfluentwidgets 的实现只会给「当前已有」的内容
+        # 部件上透明样式。先调后 setWidget 的话内容体与视口都留着浅色底，
+        # 切到深色主题时滚动区里会是一大块白底 + 白字（实测就是这个 bug）。
+        self.scroll.enableTransparentBackground()
+        self.scroll.viewport().setAutoFillBackground(False)
         self.vBoxLayout.addWidget(self.scroll, 1)
 
         self._build_header(body)
