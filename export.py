@@ -1499,8 +1499,16 @@ def export(args) -> Path:
     # --- issues（增量） ---
     stage_begin("Issues")
     log("拉取 issues ...")
+    # 数量上限语义：<=0 表示「不限」（与 --max-prs 一致）。
+    # 注意不能用 `len(issues) >= args.max_issues` 直接判断——当 max_issues=0（CLI 默认）时
+    # 该表达式恒为真，会在第一条 issue 之后就 break，使「0=全部」实际只导出 1 条。
+    issue_limit = int(getattr(args, "max_issues", 0) or 0)
+
+    def issue_limit_reached(n: int) -> bool:
+        return issue_limit > 0 and n >= issue_limit
+
     # 按编号（创建顺序）从新到旧拉取；仍过滤 pull_request
-    raw_issues_all = paginate(f"{API}/repos/{repo}/issues?state=all&sort=created&direction=desc", token, args.max_issues * 2, "issues")
+    raw_issues_all = paginate(f"{API}/repos/{repo}/issues?state=all&sort=created&direction=desc", token, issue_limit * 2, "issues")
     prev_issues = {i.get("number"): i for i in (prev.get("issues") or []) if i.get("number")}
     issues = []
     n_i_reuse = 0
@@ -1534,7 +1542,7 @@ def export(args) -> Path:
         ):
             issues.append(old)
             n_i_reuse += 1
-            if len(issues) >= args.max_issues:
+            if issue_limit_reached(len(issues)):
                 break
             continue
         comments = []
@@ -1565,7 +1573,7 @@ def export(args) -> Path:
         # 继承缓存里的 closed_by_pr（避免每次重查 timeline）
         if incremental and old and "closed_by_pr" in old:
             issues[-1]["closed_by_pr"] = old["closed_by_pr"]
-        if len(issues) >= args.max_issues:
+        if issue_limit_reached(len(issues)):
             break
     issues.sort(key=lambda x: (x.get("number") or 0), reverse=True)
     log(f"  issues: {len(issues)}（详情新拉 {n_i_fetch}, 缓存复用 {n_i_reuse}）")
