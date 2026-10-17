@@ -260,7 +260,10 @@ python export.py --repo owner/name --full   # 强制全量
   - 导出期间 `_set_profile_btns_state(False)` 会锁定**组合区与全部导出参数控件**：组合下拉、四个组合按钮、「清除缓存」，以及 `self.param_widgets` 里登记的仓库 / 输出目录 / 浏览… / Token / 显示明文 / 记住到本机缓存 / 四个数量上限 / 四个选项开关。`_poll` 在 `__DONE__` / `__FAIL__` 两个分支都恢复可用。
     - 原因：工作线程在启动时拍下快照、结束后把快照写回磁盘，导出中任何被改动的控件都会在写回时被**静默吞掉**（界面显示新值、缓存里仍是旧值），所以必须锁住全部参数控件，而不只是按钮。
     - 注意：`ttk.Button` / `tk.Checkbutton` 的 `state="disabled"` 只改行为，**外观取决于 style.map**。`TButton` 必须显式给 `disabled` 映射 `background` / `foreground` / `bordercolor`，否则按钮被禁用了却和可点状态长得一样（本项目曾因此让用户以为「导出中按钮还能用」）。新增控件若要参与导出锁定，记得 `self.param_widgets.append(w)`。
-  - `save_cache()` 用「临时文件 + `os.replace`」原子写出；`load_cache()` 遇 JSON 损坏时把原文件改名为 `<名>.json.bad` 备份后再从空缓存开始，避免后续写回直接覆盖掉可恢复的内容。
+  - `save_cache()` 用「临时文件 + `os.replace`」原子写出，**返回 bool 表示是否真的写成功**；失败时清理 `.tmp` 残留。调用方（`upsert_profile` 等）必须检查返回值：写盘失败（Program Files / 只读 U 盘 / 磁盘满 / 被杀软锁）要抛出或明确提示，**不得**继续打印「已保存」的假成功日志。
+  - `load_cache()` 遇 JSON 损坏时把原文件改名为 `<名>.json.bad` 备份后再从空缓存开始，避免后续写回直接覆盖掉可恢复的内容。因为这条隔离是**整份文件**级别的，`_normalize_profile` 必须对每个字段做类型防御（含 `name` 用 `str()` 兜底），否则一条脏数据就会让用户看到「0 个组合」且不知原因。
+  - 「清除缓存」会删除缓存文件并调 `_apply_profile(dict(DEFAULT_PROFILE, name=""))` 让**全部控件真正归位**（仓库 / 输出目录 / Token / 数量上限 / 选项），与提示语承诺的范围保持一致。
+  - 工作线程的异常处理用 `except BaseException`：`export()` 参数校验失败走 `sys.exit()` 抛 `SystemExit`（`BaseException` 子类），只 `except Exception` 会漏接，导致 `__DONE__` / `__FAIL__` 都不入队、界面永久卡在「导出中…」。`finally` 里还有一次「未发终止信号则补发 `__FAIL__`」的兜底。
 
 注意：Token 缓存只在外网导出机本地，**不会**写入导出包。
 

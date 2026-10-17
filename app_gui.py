@@ -95,9 +95,18 @@ def _now_iso() -> str:
 
 
 def _normalize_profile(raw: dict, fallback_name: str = "") -> dict:
-    """把任意来源的字典补齐成完整组合，缺失字段取默认值。"""
+    """把任意来源的字典补齐成完整组合，缺失字段取默认值。
+
+    对**所有**字段都做类型防御：缓存文件可能被手工编辑，任何一个字段类型不对
+    都不应让整份缓存读不出来（load_cache 的 except 会把整个文件隔离成 .bad）。
+    """
     p = dict(DEFAULT_PROFILE)
-    p["name"] = (raw.get("name") or fallback_name or "").strip()
+    # name 同样要 str() 兜底：直接 .strip() 在 name 是数字/对象时抛 AttributeError，
+    # 会让 load_cache 把整份缓存隔离掉，用户看到「0 个组合」且不知原因。
+    name = raw.get("name")
+    if name is None or name == "":
+        name = fallback_name
+    p["name"] = str(name or "").strip()
     for k in PROFILE_FIELDS:
         if k not in raw:
             continue
@@ -111,7 +120,10 @@ def _normalize_profile(raw: dict, fallback_name: str = "") -> dict:
             p[k] = bool(v)
         else:
             p[k] = ("" if v is None else str(v)).strip()
-    p["last_used"] = str(raw.get("last_used") or "")
+    try:
+        p["last_used"] = str(raw.get("last_used") or "")
+    except Exception:
+        p["last_used"] = ""
     return p
 
 
@@ -209,16 +221,28 @@ def load_cache() -> dict:
     return empty
 
 
-def save_cache(data: dict) -> None:
-    """原子写出：先写临时文件再替换，避免写一半断电留下坏 JSON。"""
+def save_cache(data: dict) -> bool:
+    """原子写出：先写临时文件再替换，避免写一半断电留下坏 JSON。
+
+    返回是否**真的写成功**。调用方必须据此决定是否提示「已保存」——
+    旧实现内部 `except Exception: pass` 吞掉所有写入错误（exe 放在 Program Files、
+    只读 U 盘、磁盘满、被杀软锁文件等），GUI 却照样打印「组合已保存」，
+    用户以为参数已持久化，重启后全部丢失且全程没有任何错误提示。
+    """
     try:
         tmp = TOKEN_CACHE_FILE.with_name(TOKEN_CACHE_FILE.name + ".tmp")
         tmp.write_text(
             json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         os.replace(tmp, TOKEN_CACHE_FILE)
+        return True
     except Exception:
-        pass
+        # 清理可能残留的临时文件，避免下次误读
+        try:
+            tmp.unlink()
+        except Exception:
+            pass
+        return False
 
 
 def _quarantine_cache() -> str:
@@ -281,7 +305,9 @@ def upsert_profile(profile: dict, make_active: bool = True) -> dict:
     data["version"] = CACHE_VERSION
     if make_active:
         data["active"] = p["name"]
-    save_cache(data)
+    if not save_cache(data):
+        # 写盘失败必须让调用方知道，否则 GUI 会打印「已保存」的假成功日志
+        raise OSError(f"组合缓存写入失败：{TOKEN_CACHE_FILE}")
     return p
 
 
@@ -1014,7 +1040,13 @@ class App(tk.Tk):
         self._profile_names = {}
         self.profile_var.set("")
         self.profile_combo.configure(values=[])
-        self._append_log("已清除本机组合缓存")
+        # 提示语承诺「仓库、输出目录、Token 与各选项都会被清空」，因此控件也要真的归位，
+        # 否则用户以为清空了、实际界面仍留着旧值（此时点导出会拿残留参数跑一次）。
+        try:
+            self._apply_profile(dict(DEFAULT_PROFILE, name=""))
+        except Exception:
+            pass
+        self._append_log("已清除本机组合缓存（仓库 / 输出目录 / Token / 数量上限 / 选项均已恢复默认）")
 
     def _pick_out(self):
         d = filedialog.askdirectory(title="选择输出目录")
@@ -1098,6 +1130,9 @@ class App(tk.Tk):
                 elif line == "__FAIL__":
                     self.progress.stop()
                     self.run_btn.configure(state="normal", text="开始导出")
+                    # 失败时也要放开「打开输出目录」：输出目录里往往已有部分产物，
+                    # 用户需要进去看日志/半成品；此前只有成功分支恢复它，失败后一直灰着。
+                    self.open_btn.configure(state="normal")
                     self._set_profile_btns_state(True)
                     # 保留进度条当前位置，便于定位卡在哪一步
                     self.progress_label.configure(text="失败（进度停在出错处）")
@@ -1214,6 +1249,12 @@ class App(tk.Tk):
         def run():
             old_out, old_err = sys.stdout, sys.stderr
             sys.stdout = sys.stderr = LogWriter(self.q)
+            # 终止信号必须「必达」：export() 在参数校验失败时会 sys.exit()，
+            # 抛出的是 SystemExit（BaseException 子类），`except Exception` 接不住，
+            # 会让 __DONE__ / __FAIL__ 都不入队 → 界面永远停在「导出中…」、
+            # 所有按钮与参数控件永久禁用，只能重启程序。
+            # 因此这里用 BaseException 兜底，并在 finally 里再补一次（防重复入队）。
+            finished = False
             try:
                 export_mod.export(args)
                 # 导出成功：仓库/输出目录/Token/选项整体写回该组合。
@@ -1223,16 +1264,31 @@ class App(tk.Tk):
                         upsert_profile(snapshot)
                         self.q.put(f"[缓存] 组合「{profile_name}」已保存 → {TOKEN_CACHE_FILE.name}")
                     except Exception as e:
-                        self.q.put(f"[缓存] 组合保存失败：{e}")
+                        # 写盘失败（目录只读 / 磁盘满 / 被杀软锁）必须明确告知，
+                        # 不能让用户以为参数已持久化
+                        self.q.put(f"[缓存] 组合「{profile_name}」保存失败：{e}")
+                        self.q.put("[缓存] 参数仅本次有效，重启后会丢失；请检查程序所在目录是否可写")
                 elif remember:
                     self.q.put("[缓存] 当前未选组合，未保存；可点「另存为…」建一个")
                 self.q.put("__DONE__")
-            except Exception as e:
-                self.q.put(f"[错误] {e}")
+                finished = True
+            except BaseException as e:  # noqa: BLE001 - 必须兜住 SystemExit
+                # SystemExit 的 str() 为空，补一句可读说明，便于定位
+                if isinstance(e, SystemExit):
+                    self.q.put(f"[错误] 导出中止（exit code {e.code}），详见上方日志")
+                else:
+                    self.q.put(f"[错误] {e}")
                 self.q.put(traceback.format_exc())
                 self.q.put("__FAIL__")
+                finished = True
             finally:
                 sys.stdout, sys.stderr = old_out, old_err
+                # 极端兜底：若上面的分支因故没发终止信号，这里补发，保证界面能恢复
+                if not finished:
+                    try:
+                        self.q.put("__FAIL__")
+                    except Exception:
+                        pass
 
         self.worker = threading.Thread(target=run, daemon=True)
         self.worker.start()

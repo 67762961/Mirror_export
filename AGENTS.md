@@ -26,6 +26,10 @@
 - Token 只通过环境变量或 GUI 传入，**禁止写入导出包**；本机 GUI 缓存文件为 exe 同目录的 `gh_token_cache.json`，按**组合**保存（仓库 + 输出目录 + Token + 数量上限 + 选项），支持整体切换与旧版自动迁移。
 - 组合（profile）读写约定：控件 ↔ 组合的字段搬运只允许写在 `_apply_profile` / `_capture_profile` 两处；新增可保存字段时须同时更新 `PROFILE_FIELDS`、`DEFAULT_PROFILE`（给默认值）与 `_migrate_v1` 的继承列表，否则旧缓存会被重置为默认值。Token 写控件统一走 `_set_token_field()`。
 - 导出期间会锁定全部导出参数控件（见 `_set_profile_btns_state` 与 `self.param_widgets`）：因为工作线程结束时把**启动时的快照**写回磁盘，导出中被改动的控件会被静默吞掉。新增任何可编辑参数控件时，必须 `self.param_widgets.append(w)` 登记，否则用户能在导出中改它、改动却丢失。
+- GUI 工作线程的异常处理必须**兜住 `BaseException`**（不能只 `except Exception`）：`export()` 参数校验失败时走 `sys.exit()`，抛的是 `SystemExit`（`BaseException` 子类），漏接会让 `__DONE__` / `__FAIL__` 都不入队 → 界面永久停在「导出中…」、全部控件禁用，只能重启。`__FAIL__` 与 `__DONE__` 两个分支必须恢复同一组控件（含「打开输出目录」）。
+- 缓存写盘结果必须**如实反馈**：`save_cache()` 返回 bool，调用方（`upsert_profile` 等）据此抛错或提示，**禁止**在写盘失败时仍打印「已保存」——程序放在 Program Files / 只读 U 盘 / 磁盘满时用户会以为参数已持久化，重启后全部丢失。
+- `_normalize_profile` 对**每个字段**都要类型防御（含 `name` 用 `str()` 兜底）：`load_cache` 的 `except` 会把整个缓存文件隔离成 `.bad`，一个脏字段就足以让用户看到「0 个组合」且不知原因。
+- 「清除缓存」等提示语承诺清空的范围，实现必须一致（清完后调 `_apply_profile(dict(DEFAULT_PROFILE, name=""))` 让控件真正归位），否则界面留着旧值、用户点导出会拿残留参数跑一次。
 - 增量导出是默认行为：Commit 按 sha 无限累积、PR/Issue 按 `updated_at` 判断是否复用详情、文件内容与图片按 blob sha 判断变化；改增量逻辑时不得静默丢弃历史缓存。**「失败 ≠ 空结果」是硬约束**：抓取失败或超出预算的条目**不得**写成确定的空结果（commit 不带 `files` 键；PR/Issue 不带 `files_fetched` / `comments_fetched` 标记），否则一次网络抖动或一次 `--skip-details` 会被永久固化成「已完成」，之后调大 `--max-commit-diffs` 也补不回来。新增可增量复用的字段时，必须同时提供「已确认抓到」的成功标记。
 - 请求失败不得被当成空数据写出：`/branches` 等列表请求失败时**沿用上一轮快照**（分支是快照语义，清空会连带摧毁缓存），并在 `meta.file_stats.branches_stale` 标注本轮未刷新。
 - 跨轮派生字段不得依赖缓存命中分支：`related_pr_nums` 这类「只由本轮已拿到的数据派生」的字段，必须在复用判断**之前**无条件计算，否则命中缓存时会缺失该字段、后续回填段把 `related_prs` 覆盖成空值，静默丢数据。改 Release 对比段时注意这条。
