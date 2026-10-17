@@ -2080,9 +2080,14 @@
 
     if (refs.length && baseRef && headRef && refKey(baseRef) !== refKey(headRef)) {
       const { headOnly, baseOnly, mergeBase } = compareResult(baseRef, headRef);
+      // 搜索：跨全量匹配、不截断（与 Commit 页的 searching || unlimited 口径一致）
+      const searching = !!state.search;
+      const matched = searching
+        ? headOnly.filter((c) => matchSearch(`${c.sha} ${c.message || ""} ${c.author_name || ""}`))
+        : headOnly;
       const unlimited = !(state.compareRows > 0);
-      const list = unlimited ? headOnly : headOnly.slice(0, state.compareRows);
-      const remain = unlimited ? 0 : Math.max(0, headOnly.length - list.length);
+      const list = (searching || unlimited) ? matched : matched.slice(0, state.compareRows);
+      const remain = (searching || unlimited) ? 0 : Math.max(0, matched.length - list.length);
       const pre = precomputedFiles(baseRef, headRef);
 
       const fileBlock = pre
@@ -2096,13 +2101,13 @@
       const limitOptions = [[150, "最近 150 条"], [300, "最近 300 条"], [600, "最近 600 条"], [0, "全部"]]
         .map(([v, lab]) => `<option value="${v}"${state.compareLimit === v ? " selected" : ""}>${lab}</option>`)
         .join("");
-      const toolbar = headOnly.length > 150
-        ? `<div class="filters list-toolbar">
+      const toolbar = (searching || matched.length <= 150)
+        ? ""
+        : `<div class="filters list-toolbar">
              <label class="small muted">显示</label>
              <select id="cmp-limit" aria-label="显示条数">${limitOptions}</select>
-             <span class="small muted">head 独有 ${headOnly.length} 个${remain ? ` · 已显示最近 ${list.length} 条` : ""}</span>
-           </div>`
-        : "";
+             <span class="small muted">head 独有 ${matched.length} 个${remain ? ` · 已显示最近 ${list.length} 条` : ""}</span>
+           </div>`;
       const moreBtn = remain
         ? `<div class="list-more"><button class="btn" id="cmp-more">加载更多（还有 ${remain} 条）</button></div>`
         : "";
@@ -2325,8 +2330,11 @@
     const limitOptions = [[150, "最近 150 条"], [300, "最近 300 条"], [600, "最近 600 条"], [0, "全部"]]
       .map(([v, lab]) => `<option value="${v}"${state.graphLimit === v ? " selected" : ""}>${lab}</option>`)
       .join("");
-    const toolbar = `
-      <div class="filters gitgraph-toolbar">
+    // 搜索时隐藏档位与「加载更多」（与 Commit 页一致：搜索跨全量、不截断）
+    const searchingGraph = !!state.search;
+    const toolbar = searchingGraph
+      ? ""
+      : `<div class="filters gitgraph-toolbar">
         <label class="small muted">显示</label>
         <select id="graph-limit" aria-label="显示条数">${limitOptions}</select>
         <span class="small muted">共 ${total} 个提交${remain ? ` · 已显示最近 ${shown} 条` : ""}</span>
