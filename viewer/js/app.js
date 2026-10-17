@@ -2466,12 +2466,16 @@
   /* ---------- 图片：右键在新标签页打开原图（保留当前页） ---------- */
   function openImageInNewTab(src) {
     if (!src) return;
+    let url;
     try {
-      const url = new URL(src, window.location.href).href;
-      window.open(url, "_blank", "noopener,noreferrer");
+      url = new URL(src, window.location.href).href;
     } catch (e) {
-      window.open(src, "_blank", "noopener");
+      return;   // 无法解析的 URL 直接忽略，不再原样交给 window.open
     }
+    // 只放行 http(s) 与 file（内网用 file:// 打开导出包）；
+    // javascript:/data:/blob: 等一律拒绝，避免把正文里的伪协议当图片打开。
+    if (!/^(?:https?|file):/i.test(url)) return;
+    window.open(url, "_blank", "noopener,noreferrer");
   }
 
   function enhanceMarkdownImages(root) {
