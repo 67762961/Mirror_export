@@ -1232,8 +1232,12 @@ def export(args) -> Path:
     prev_releases = {
         r.get("tag_name"): r for r in (prev.get("releases") or []) if r.get("tag_name")
     }
-    # tags 新→旧；每个 release 对上一个 tag 做 compare
+    # tags 新→旧；每个 release 对「它在 tags 里的前一个 tag」做 compare。
+    # 注意：不能用 release 的下标去索引 tags —— 存在没有 Release 的 tag（CI/nightly 很常见），
+    # 或 releases 条数/顺序与 tags 不一致时，下标会错位，导致 base 指向错误的 tag，
+    # 甚至 base == head 自比（total_commits=0、无文件差异）。这里改为按 tag_name 定位。
     tag_names = [t.get("name") for t in tags if t.get("name")]
+    tag_pos = {name: idx for idx, name in enumerate(tag_names)}
     for i, rel in enumerate(releases):
         tag = rel.get("tag_name")
         old = prev_releases.get(tag)
@@ -1251,7 +1255,15 @@ def export(args) -> Path:
             rel["compare"] = old["compare"]
             progress("Release 对比", i + 1, len(releases), f"{tag}（缓存）")
             continue
-        base = tag_names[i + 1] if i + 1 < len(tag_names) else None
+        # base = 该 release 对应 tag 在 tags 列表里的下一个（更旧的）tag；
+        # 找不到该 tag 时退回「按 release 顺序取下一个」，保证旧行为不至于完全失效。
+        pos = tag_pos.get(tag)
+        if pos is not None:
+            base = tag_names[pos + 1] if pos + 1 < len(tag_names) else None
+        else:
+            base = tag_names[i + 1] if i + 1 < len(tag_names) else None
+        if base == tag:
+            base = None   # 防御：绝不与自身对比
         compare = {"base": base, "head": tag, "commits": [], "files": [], "total_commits": 0, "truncated": False}
         if base and not args.skip_details:
             try:
