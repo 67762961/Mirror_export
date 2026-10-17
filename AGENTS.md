@@ -38,6 +38,9 @@
 - `--max-branch-commits` 主动裁剪时**必须置 `truncated`**（判据：`total > len(keep)`），不能只反映「compare 单次返回上限」；否则用户看到被裁后的条数却没有任何「已截断」提示。前端应显示 `N / total`。`graph.truncated` 由 `cmp_block.truncated` 派生，会自动同步。
 - 分支独有 commit 的逐条 diff 走 `--max-branch-diffs`（默认 30，0=不拉；`--skip-details` 强制为 0）：只为非 stub 节点拉取，按 `author_date` 新→旧排序以保证预算优先给最近提交；命中上一轮 `graph` 节点缓存的**不消耗预算**。预算耗尽后剩余节点只保留骨架（图上不断链），不报错。
 - 查看器查提交一律走 `commitPool()` / `findCommitAnywhere()`（主干 → graph → PR 内 → Release compare 按 sha 去重合并），**禁止再写只查 `D.commits` 的查找**：分支独有提交与未合并 PR 的提交不在 `commits.js` 里，只查主干会让它们点开报「未找到」。Commit 页的 ref 切换（`commitRefs` / `commitsForRef`）从 `graph.refs` 取选项、沿 `parents` 回溯（需带环状保护），无 `graph.js` 的旧包要退回平铺列表。**「可点」判定也要走池**（Release 详情、分支详情、分支树行都用 `findCommitAnywhere`）；但 **stub 节点虽在池中也必须排除**（`!cell.stub`），否则点进去是空提交页。
+- `commitPool()` 合并时**非 stub 必须优先于 stub**：stub 是「历史未导出」的占位（message/parents 皆空），若它先占住 sha，后面 release compare 里的真实记录会被 Map 去重丢掉 → 老 tag 的提交列表 0 条、详情页空标题。导出侧也要配合：`_add_stub` **不得覆盖已有真实记录的 sha**（release compare 的 commits 不进 `graph.nodes`，必须单独收集 `release_known` 再判断）。
+- release compare 的 commit 条目**必须带 `parents`**（与分支 compare 同口径）：查看器 `reachableSet()` 沿 parents 回溯，缺该字段会让可达集合在此断链，版本对比的落后条数/分叉点失真、Commit 页切到该 tag 看不到更早历史。
+- `asset_rel()` **禁止用 `lstrip("./")`**：它按字符集剥离会把 `.github/banner.png` 变成 `github/banner.png`，而查看器 `mdSrc` 兜底只去掉真正的 `./` 前缀，仍去找 `assets/.github/banner.png` → 内网裂图。只能剥真正的 `./` 前缀与开头 `/`。
 - 分支树的 `overflow`（「可横向滚动」提示）按**整行泳道数** `laneCount` 判定，不能只看本行提交所在的 `lane`：某行活跃泳道可能比提交自身更靠右，只看 lane 会漏报。
 - 预计算文件差异（`precomputedFiles`）比对 ref 时**必须同时比 type**（用 `refKey`，如 `branch:main` / `tag:main`）：仓库里可能同名分支与标签，只比 `name` 会把「默认分支→某分支」的差异当成「同名 tag→某分支」展示，起点对象不同、增删会误导。
 - 版本对比页与分支树同样必须**接入全局搜索**（`state.search`）：搜索时跨全量匹配、不截断、隐藏档位与「加载更多」，与 Commit 页口径一致。

@@ -36,6 +36,9 @@ API = "https://api.github.com"
 MAX_RETRIES = 3
 BACKOFF = 2.0
 
+# release compare 单轮最多保留多少条 commit（与分支 compare 的裁剪口径保持独立可调）
+RELEASE_COMPARE_MAX_COMMITS = 100
+
 BINARY_EXT = {
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".bmp", ".tif", ".tiff",
     ".pdf", ".zip", ".7z", ".rar", ".tar", ".gz", ".bz2", ".xz",
@@ -1083,7 +1086,18 @@ def copy_viewer(viewer_src: Path, out: Path) -> None:
 
 
 def asset_rel(path: str) -> str:
-    return path.replace("\\", "/").lstrip("./")
+    """把仓库内路径转成 assets 下的相对路径（统一正斜杠）。
+
+    注意**不能用** ``lstrip("./")``：它按字符集剥离，会把 ``.github/banner.png``
+    开头的 ``.`` 也吃掉，得到 ``github/banner.png``；而查看器 mdSrc 的兜底只去掉
+    真正的 ``./`` 前缀，仍去找 ``assets/.github/banner.png`` → 内网裂图。
+    这里只剥真正的 ``./`` 前缀与开头的 ``/``，保留点目录。
+    """
+    rel = path.replace("\\", "/")
+    while rel.startswith("./"):
+        rel = rel[2:]
+    rel = rel.lstrip("/")
+    return rel
 
 
 def merge_image_map(prev_map: dict | None, new_map: dict | None, out: Path) -> dict:
@@ -1271,7 +1285,10 @@ def export(args) -> Path:
                 raw_cmp, _ = http_get(cmp_url, token)
                 c_commits = raw_cmp.get("commits") or []
                 compare["total_commits"] = raw_cmp.get("total_commits") or len(c_commits)
-                # 只保留列表展示需要的字段
+                # 只保留列表展示需要的字段。
+                # 必须带 parents：查看器 reachableSet() 沿 parents 回溯，
+                # 缺该字段会让可达集合在此断链（版本对比的落后/分叉点失真、
+                # Commit 页切到该 tag 也看不到更早历史）。与分支 compare 口径一致。
                 compare["commits"] = [
                     {
                         "sha": c.get("sha"),
@@ -1279,8 +1296,9 @@ def export(args) -> Path:
                         "author_name": ((c.get("commit") or {}).get("author") or {}).get("name"),
                         "author_date": ((c.get("commit") or {}).get("author") or {}).get("date"),
                         "author": slim_user(c.get("author")),
+                        "parents": [p.get("sha") for p in (c.get("parents") or []) if p.get("sha")],
                     }
-                    for c in c_commits[:100]
+                    for c in c_commits[:RELEASE_COMPARE_MAX_COMMITS]
                 ]
                 compare["files"] = [map_file(f) for f in (raw_cmp.get("files") or [])[:200]]
                 compare["ahead_by"] = raw_cmp.get("ahead_by")
@@ -2193,13 +2211,29 @@ def export(args) -> Path:
             "stub": True,
         }
 
+    # release compare 里的真实提交记录：这些 sha 不能建 stub，
+    # 否则查看器 commitPool 的 Map 去重会让空 stub 遮蔽真实记录（老 tag 的提交全不可见）。
+    # 注意 release compare 的 commits 不进 graph_nodes，故必须单独收集。
+    release_known: set = set()
+    for r in releases:
+        for c in (r.get("compare") or {}).get("commits") or []:
+            sha_c = c.get("sha")
+            if sha_c:
+                release_known.add(sha_c)
+
+    def _add_stub_safe(sha: str) -> None:
+        """建占位，但绝不覆盖「已有真实记录」的 sha。"""
+        if sha and sha in release_known:
+            return
+        _add_stub(sha)
+
     # 引用指向的提交：不在主干池也不在节点池 → 占位（如 compare 失败的领先分支）
     for sha in list(graph_branches.values()) + list(graph_tags.values()):
-        _add_stub(sha)
+        _add_stub_safe(sha)
     # 节点引用的父提交：缺失则占位（导出窗口外 / compare 截断）
     for node in list(graph_nodes.values()):
         for p in node.get("parents") or []:
-            _add_stub(p)
+            _add_stub_safe(p)
 
     # --- 分支独有 commit 的逐条 diff（预算控制 + 增量复用） ---
     # 复用上一轮 graph 节点里已抓到的 diff（按 sha 命中，不消耗预算）。

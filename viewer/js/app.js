@@ -863,7 +863,15 @@
   function commitPool() {
     if (commitPoolCache) return commitPoolCache;
     const map = new Map();
-    const add = (c) => { if (c && c.sha && !map.has(c.sha)) map.set(c.sha, c); };
+    // 非 stub 优先于 stub：stub 是「历史未导出」的占位（message/parents 都为空），
+    // 若它先占住 sha，后面 release compare 里的真实记录就会被 Map 去重丢掉，
+    // 表现为「老 tag 的提交列表 0 条、详情页空标题」。
+    const add = (c) => {
+      if (!c || !c.sha) return;
+      const prev = map.get(c.sha);
+      if (!prev) { map.set(c.sha, c); return; }
+      if (prev.stub && !c.stub) map.set(c.sha, c);
+    };
     (D.commits || []).forEach(add);
     ((D.graph && D.graph.nodes) || []).forEach(add);
     (D.prs || []).forEach((p) => (p.commits_list || []).forEach(add));
