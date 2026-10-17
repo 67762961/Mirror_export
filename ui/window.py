@@ -493,8 +493,11 @@ class MainWindow(FluentWindowBase):
         bar.addWidget(open_btn)
 
     def _notify_failure(self, reason: str) -> None:
-        """失败提示条：常驻到用户关掉（duration=-1），因为失败往往需要立刻处理。"""
-        InfoBar.error(
+        """失败提示条：常驻到用户关掉（duration=-1），因为失败往往需要立刻处理。
+
+        失败时也带「打开输出目录」：输出目录里通常已有半成品与日志，用户要进去看。
+        """
+        bar = InfoBar.error(
             "导出失败",
             reason,
             parent=self,
@@ -502,6 +505,9 @@ class MainWindow(FluentWindowBase):
             duration=-1,
             isClosable=True,
         )
+        open_btn = PushButton("打开输出目录", bar)
+        open_btn.clicked.connect(self._open_out)
+        bar.addWidget(open_btn)
 
     # ---------- 参数 / 导出 ----------
     def _collect_args(self):
