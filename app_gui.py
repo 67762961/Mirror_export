@@ -3,14 +3,34 @@
 
 from __future__ import annotations
 
-import json
 import os
 import queue
 import sys
 import threading
 import traceback
-from datetime import datetime, timezone
 from pathlib import Path
+
+# gui_core（组合缓存 / 进度解析 / 日志队列）与本文件同目录，先挂 sys.path 再导入
+_HERE = Path(__file__).resolve().parent
+if str(_HERE) not in sys.path:
+    sys.path.insert(0, str(_HERE))
+
+from gui_core import (  # noqa: E402 - 必须先补 sys.path
+    DEFAULT_PROFILE,
+    PROFILE_FIELDS,
+    TOKEN_CACHE_FILE,
+    LogWriter,
+    active_profile,
+    app_root,
+    delete_profile,
+    exe_dir,
+    get_profile,
+    list_profiles,
+    mask_token,
+    parse_progress,
+    rename_profile,
+    upsert_profile,
+)
 
 # 高 DPI：避免 Windows 缩放导致界面/图标发糊
 if sys.platform == "win32":
@@ -31,12 +51,8 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 # 与 export.py 同目录；打包后 viewer 在 _MEIPASS
-if getattr(sys, "frozen", False):
-    ROOT = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
-    EXE_DIR = Path(sys.executable).resolve().parent
-else:
-    ROOT = Path(__file__).resolve().parent
-    EXE_DIR = ROOT
+ROOT = app_root()
+EXE_DIR = exe_dir()
 
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -46,314 +62,8 @@ try:
 except Exception:
     export_mod = None
 
-TOKEN_CACHE_FILE = EXE_DIR / "gh_token_cache.json"
-CACHE_VERSION = 2
-MAX_PROFILES = 20
-
 # 进度区各控件之间的统一间距，保证间隔视觉均匀
 _GAP = 10
-
-# 一个「组合」= 仓库 + 输出目录 + Token + 数量上限 + 各选项开关
-PROFILE_FIELDS = (
-    "repo",
-    "out",
-    "token",
-    "max_prs",
-    "max_issues",
-    "max_commits",
-    "max_tags",
-    "skip_details",
-    "include_contents",
-    "force",
-    "incremental",
-)
-
-DEFAULT_PROFILE = {
-    "repo": "",
-    "out": "",
-    "token": "",
-    "max_prs": 80,
-    "max_issues": 80,
-    "max_commits": 100,
-    "max_tags": 50,
-    "skip_details": False,
-    "include_contents": True,
-    "force": True,
-    "incremental": True,
-}
-
-
-def mask_token(token: str) -> str:
-    token = token or ""
-    if len(token) <= 12:
-        return token[:4] + "••••" if token else ""
-    return f"{token[:6]}…{token[-4:]}"
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _normalize_profile(raw: dict, fallback_name: str = "") -> dict:
-    """把任意来源的字典补齐成完整组合，缺失字段取默认值。
-
-    对**所有**字段都做类型防御：缓存文件可能被手工编辑，任何一个字段类型不对
-    都不应让整份缓存读不出来（load_cache 的 except 会把整个文件隔离成 .bad）。
-    """
-    p = dict(DEFAULT_PROFILE)
-    # name 同样要 str() 兜底：直接 .strip() 在 name 是数字/对象时抛 AttributeError，
-    # 会让 load_cache 把整份缓存隔离掉，用户看到「0 个组合」且不知原因。
-    name = raw.get("name")
-    if name is None or name == "":
-        name = fallback_name
-    p["name"] = str(name or "").strip()
-    for k in PROFILE_FIELDS:
-        if k not in raw:
-            continue
-        v = raw[k]
-        if k in ("max_prs", "max_issues", "max_commits", "max_tags"):
-            try:
-                p[k] = int(v)
-            except Exception:
-                pass
-        elif k in ("skip_details", "include_contents", "force", "incremental"):
-            p[k] = bool(v)
-        else:
-            p[k] = ("" if v is None else str(v)).strip()
-    try:
-        p["last_used"] = str(raw.get("last_used") or "")
-    except Exception:
-        p["last_used"] = ""
-    return p
-
-
-def _migrate_v1(data: dict) -> dict:
-    """v1（tokens 列表 + 全局 last_repo/last_out）→ v2 profiles。
-
-    旧文件不删除，只做就地升级；每条 Token 合成一个组合，
-    首个 Token 继承全局的 last_repo / last_out。
-    """
-    profiles = []
-    seen_name = set()
-    last_repo = (data.get("last_repo") or "").strip()
-    last_out = (data.get("last_out") or "").strip()
-    incremental = bool(data.get("incremental", True))
-    for item in data.get("tokens") or []:
-        if not isinstance(item, dict):
-            continue
-        tok = (item.get("token") or "").strip()
-        if not tok:
-            continue
-        # 注意：用已生成条数判断“首条”，不能用原始下标
-        #（前几项可能因非 dict / 空 token 被 continue 跳过）
-        first = not profiles
-        # 优先用该 Token 自己记录过的 repo；v1 的 last_repo 只是「最近用过」，
-        # 仅在该条目没有 repo 时兜底，不能覆盖已有值（否则会丢用户的仓库信息）
-        repo = (item.get("repo") or "").strip() or (last_repo if first else "")
-        # 同理，last_out 是全局「最近输出目录」，只补给没有输出目录的首条
-        out = (item.get("out") or "").strip() or (last_out if first else "")
-        name = repo or f"组合 {len(profiles) + 1}"
-        base, n = name, 2
-        while name in seen_name:
-            name = f"{base} ({n})"
-            n += 1
-        seen_name.add(name)
-        raw = {
-            "name": name,
-            "repo": repo,
-            "out": out,
-            "token": tok,
-            "incremental": incremental,
-            "last_used": item.get("last_used") or "",
-        }
-        # v1 若已存在这些字段（如手工加过），一并继承，不要退回默认值
-        for k in (
-            "max_prs",
-            "max_issues",
-            "max_commits",
-            "max_tags",
-            "skip_details",
-            "include_contents",
-            "force",
-        ):
-            if k in data:
-                raw[k] = data[k]
-            elif k in item:
-                raw[k] = item[k]
-        profiles.append(_normalize_profile(raw))
-    return {
-        "version": CACHE_VERSION,
-        "profiles": profiles,
-        "active": profiles[0]["name"] if profiles else "",
-    }
-
-
-def load_cache() -> dict:
-    """读取本机组合缓存；自动把旧版格式迁移为 v2（写回一次）。
-
-    内容解析不出来时把原文件改名为 .json.bad 备份，不静默丢弃也不覆盖。
-    """
-    empty = {"version": CACHE_VERSION, "profiles": [], "active": ""}
-    try:
-        if TOKEN_CACHE_FILE.exists():
-            data = json.loads(TOKEN_CACHE_FILE.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                if isinstance(data.get("profiles"), list):
-                    profiles = [
-                        _normalize_profile(p)
-                        for p in data["profiles"]
-                        if isinstance(p, dict)
-                    ]
-                    profiles = [p for p in profiles if p.get("name")]
-                    return {
-                        "version": CACHE_VERSION,
-                        "profiles": profiles,
-                        "active": str(data.get("active") or ""),
-                    }
-                if isinstance(data.get("tokens"), list):
-                    # 旧版：迁移后立刻落盘，保证只迁一次
-                    migrated = _migrate_v1(data)
-                    save_cache(migrated)
-                    return migrated
-    except Exception:
-        # JSON 损坏 / 读失败：留一份 .json.bad 再重新开始，避免把内容写没了
-        _quarantine_cache()
-    return empty
-
-
-def save_cache(data: dict) -> bool:
-    """原子写出：先写临时文件再替换，避免写一半断电留下坏 JSON。
-
-    返回是否**真的写成功**。调用方必须据此决定是否提示「已保存」——
-    旧实现内部 `except Exception: pass` 吞掉所有写入错误（exe 放在 Program Files、
-    只读 U 盘、磁盘满、被杀软锁文件等），GUI 却照样打印「组合已保存」，
-    用户以为参数已持久化，重启后全部丢失且全程没有任何错误提示。
-    """
-    try:
-        tmp = TOKEN_CACHE_FILE.with_name(TOKEN_CACHE_FILE.name + ".tmp")
-        tmp.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        os.replace(tmp, TOKEN_CACHE_FILE)
-        return True
-    except Exception:
-        # 清理可能残留的临时文件，避免下次误读
-        try:
-            tmp.unlink()
-        except Exception:
-            pass
-        return False
-
-
-def _quarantine_cache() -> str:
-    """缓存读不出来时备份原文件，避免后续写回把可恢复的内容直接覆盖掉。"""
-    try:
-        if not TOKEN_CACHE_FILE.exists():
-            return ""
-        backup = TOKEN_CACHE_FILE.with_name(TOKEN_CACHE_FILE.name + ".bad")
-        os.replace(TOKEN_CACHE_FILE, backup)
-        return backup.name
-    except Exception:
-        return ""
-
-
-def list_profiles() -> list[dict]:
-    return load_cache().get("profiles", [])
-
-
-def get_profile(name: str) -> dict | None:
-    name = (name or "").strip()
-    for p in list_profiles():
-        if p.get("name") == name:
-            return p
-    return None
-
-
-def active_profile() -> dict | None:
-    """上次使用的组合；active 失效时回落到最近使用的一条。"""
-    data = load_cache()
-    profiles = data.get("profiles", [])
-    if not profiles:
-        return None
-    act = data.get("active") or ""
-    for p in profiles:
-        if p.get("name") == act:
-            return p
-    ordered = sorted(profiles, key=lambda p: p.get("last_used") or "", reverse=True)
-    return ordered[0]
-
-
-def upsert_profile(profile: dict, make_active: bool = True) -> dict:
-    """按 name 覆盖或新增一条组合，返回规范化后的结果。"""
-    p = _normalize_profile(profile, fallback_name=profile.get("name", ""))
-    if not p["name"]:
-        raise ValueError("组合名称不能为空")
-    p["last_used"] = p.get("last_used") or _now_iso()
-    data = load_cache()
-    profiles = data.get("profiles", [])
-    replaced = False
-    for i, old in enumerate(profiles):
-        if old.get("name") == p["name"]:
-            profiles[i] = p
-            replaced = True
-            break
-    if not replaced:
-        if len(profiles) >= MAX_PROFILES:
-            raise ValueError(f"组合最多 {MAX_PROFILES} 个，请先删除不用的")
-        profiles.append(p)
-    data["profiles"] = profiles
-    data["version"] = CACHE_VERSION
-    if make_active:
-        data["active"] = p["name"]
-    if not save_cache(data):
-        # 写盘失败必须让调用方知道，否则 GUI 会打印「已保存」的假成功日志
-        raise OSError(f"组合缓存写入失败：{TOKEN_CACHE_FILE}")
-    return p
-
-
-def delete_profile(name: str) -> None:
-    name = (name or "").strip()
-    data = load_cache()
-    data["profiles"] = [p for p in data.get("profiles", []) if p.get("name") != name]
-    if data.get("active") == name:
-        # 清空 active，交由 active_profile() 按 last_used 回落到最近使用的组合
-        data["active"] = ""
-    save_cache(data)
-
-
-def rename_profile(old_name: str, new_name: str) -> None:
-    new_name = (new_name or "").strip()
-    if not new_name:
-        raise ValueError("组合名称不能为空")
-    data = load_cache()
-    profiles = data.get("profiles", [])
-    if any(p.get("name") == new_name for p in profiles if p.get("name") != old_name):
-        raise ValueError(f"组合「{new_name}」已存在")
-    hit = False
-    for p in profiles:
-        if p.get("name") == old_name:
-            p["name"] = new_name
-            hit = True
-    if not hit:
-        raise ValueError("该组合不存在")
-    if data.get("active") == old_name:
-        data["active"] = new_name
-    save_cache(data)
-
-
-class LogWriter:
-    """把 print 重定向到队列，供 UI 消费。"""
-
-    def __init__(self, q: queue.Queue):
-        self.q = q
-
-    def write(self, s: str):
-        s = (s or "").rstrip("\n")
-        if s:
-            self.q.put(s)
-
-    def flush(self):
-        pass
 
 
 class App(tk.Tk):
@@ -1070,46 +780,24 @@ class App(tk.Tk):
         self.log.see("end")
 
     def _apply_progress(self, payload: str):
-        try:
-            info = json.loads(payload)
-        except Exception:
+        # 口径统一在 gui_core.parse_progress（四段信息），界面只负责贴到控件上
+        info = parse_progress(payload)
+        if not info:
             return
-        stage = str(info.get("stage") or "")
-        done = int(info.get("done") or 0)
-        total = int(info.get("total") or 0)
-        note = str(info.get("note") or "")
-        # 全局加权百分比由 exporter 算好；缺失时退回阶段内百分比（兼容旧 exporter）
-        overall = info.get("overall")
-        stage_idx = int(info.get("stage_idx") or 0)
-        stage_n = int(info.get("stage_n") or 0)
-        if overall is None:
-            overall = int(done * 100 / total) if total else 0
         try:
-            overall = max(0, min(100, int(overall)))
-            self.progress.configure(mode="determinate", maximum=100, value=overall)
+            self.progress.configure(
+                mode="determinate", maximum=100, value=info["overall"]
+            )
         except Exception:
             pass
         # 四段信息各自独立成列，从左到右：
         #   百分比 | 总任务进度(已完成阶段/总阶段) | 阶段内计数(done/total) | 说明文本
         # 无任务时统一显示 0/0、0% 占位，说明文本留空不占位。
-        self.progress_pct.configure(text=f"{overall}%")
-        if stage_idx and stage_n:
-            # 阶段进行中：最后一段阶段视为已完成，进度条走满时同步到 N/N
-            finished = stage_idx if (total and done >= total) else stage_idx - 1
-            finished = max(0, min(stage_n, finished))
-            self.progress_stages.configure(text=f"{finished}/{stage_n}")
-        else:
-            self.progress_stages.configure(text="0/0")
-        self.progress_count.configure(text=f"{done}/{total}" if total else "0/0")
-        if note:
-            note = note if len(note) <= 60 else note[:57] + "..."
-            detail = f" · {note}"
-        else:
-            detail = ""
-        self.progress_label.configure(text=f"{stage}{detail}" if stage else "")
-        self.status.configure(
-            text=f"{stage} {done}/{total}（{overall}%）" if total else f"{stage}（{overall}%）"
-        )
+        self.progress_pct.configure(text=info["pct_text"])
+        self.progress_stages.configure(text=info["stages_text"])
+        self.progress_count.configure(text=info["count_text"])
+        self.progress_label.configure(text=info["detail_text"])
+        self.status.configure(text=info["status_text"])
 
     def _poll(self):
         try:
