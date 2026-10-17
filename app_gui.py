@@ -1214,6 +1214,12 @@ class App(tk.Tk):
         def run():
             old_out, old_err = sys.stdout, sys.stderr
             sys.stdout = sys.stderr = LogWriter(self.q)
+            # 终止信号必须「必达」：export() 在参数校验失败时会 sys.exit()，
+            # 抛出的是 SystemExit（BaseException 子类），`except Exception` 接不住，
+            # 会让 __DONE__ / __FAIL__ 都不入队 → 界面永远停在「导出中…」、
+            # 所有按钮与参数控件永久禁用，只能重启程序。
+            # 因此这里用 BaseException 兜底，并在 finally 里再补一次（防重复入队）。
+            finished = False
             try:
                 export_mod.export(args)
                 # 导出成功：仓库/输出目录/Token/选项整体写回该组合。
@@ -1227,12 +1233,24 @@ class App(tk.Tk):
                 elif remember:
                     self.q.put("[缓存] 当前未选组合，未保存；可点「另存为…」建一个")
                 self.q.put("__DONE__")
-            except Exception as e:
-                self.q.put(f"[错误] {e}")
+                finished = True
+            except BaseException as e:  # noqa: BLE001 - 必须兜住 SystemExit
+                # SystemExit 的 str() 为空，补一句可读说明，便于定位
+                if isinstance(e, SystemExit):
+                    self.q.put(f"[错误] 导出中止（exit code {e.code}），详见上方日志")
+                else:
+                    self.q.put(f"[错误] {e}")
                 self.q.put(traceback.format_exc())
                 self.q.put("__FAIL__")
+                finished = True
             finally:
                 sys.stdout, sys.stderr = old_out, old_err
+                # 极端兜底：若上面的分支因故没发终止信号，这里补发，保证界面能恢复
+                if not finished:
+                    try:
+                        self.q.put("__FAIL__")
+                    except Exception:
+                        pass
 
         self.worker = threading.Thread(target=run, daemon=True)
         self.worker.start()
