@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QTextCharFormat, QTextCursor
 from PyQt6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
 from qfluentwidgets import (
+    Action,
     BodyLabel,
     CaptionLabel,
+    FluentIcon,
     LineEdit,
     MessageBoxBase,
     PlainTextEdit,
     PrimaryPushButton,
     ProgressBar,
     PushButton,
+    RoundMenu,
     SimpleCardWidget,
     SubtitleLabel,
     isDarkTheme,
@@ -161,11 +164,18 @@ class ActionBar(QWidget):
 
 
 class LogPanel(QWidget):
-    """日志区：等宽、只读、自动滚到底、按语义着色、超过上限从头裁掉（配合导出长跑）。
+    """日志区：等宽、只读、自动滚到底、按语义着色、右键菜单、超过上限从头裁掉。
 
     着色只影响观感：级别由 `gui_core.classify_log_line` 判定，取不到颜色就跟随默认前景色。
     主题切换后调用 `refresh_colors()` 重新上色（已写进文档的日志不会自己变色）。
+
+    右键菜单（复制全部 / 另存为文件 / 清空日志）只在这里弹，具体动作由控制器接线 ——
+    面板不碰文件系统，方便单测。
     """
+
+    copyRequested = pyqtSignal()
+    saveRequested = pyqtSignal()
+    clearRequested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -175,11 +185,35 @@ class LogPanel(QWidget):
         self.text = PlainTextEdit(self)
         self.text.setReadOnly(True)
         self.text.setFont(log_font())
-        self.text.setPlaceholderText("导出日志会显示在这里")
+        self.text.setPlaceholderText("导出日志会显示在这里（右键可复制 / 另存为 / 清空）")
+        self.text.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.text.customContextMenuRequested.connect(self._show_menu)
         self.vBoxLayout.addWidget(self.text)
 
         # (起始位置, 结束位置, 级别)，主题切换时按这个表重刷颜色
         self._spans: list[tuple[int, int, str]] = []
+
+    def _show_menu(self, pos) -> None:
+        menu = RoundMenu(parent=self.text)
+
+        copy_action = Action(FluentIcon.COPY, "复制全部", menu)
+        copy_action.triggered.connect(self.copyRequested.emit)
+        menu.addAction(copy_action)
+
+        save_action = Action(FluentIcon.SAVE, "另存为文件…", menu)
+        save_action.triggered.connect(self.saveRequested.emit)
+        menu.addAction(save_action)
+
+        menu.addSeparator()
+
+        clear_action = Action(FluentIcon.DELETE, "清空日志", menu)
+        clear_action.triggered.connect(self.clearRequested.emit)
+        menu.addAction(clear_action)
+
+        menu.exec(self.text.mapToGlobal(pos))
+
+    def to_plain_text(self) -> str:
+        return self.text.toPlainText()
 
     def append_line(self, line: str) -> None:
         level = classify_log_line(line)
