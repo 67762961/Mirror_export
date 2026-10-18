@@ -23,7 +23,13 @@ from pathlib import Path
 
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QApplication, QFileDialog
-from qfluentwidgets import MessageBox
+from qfluentwidgets import (
+    InfoBar,
+    InfoBarPosition,
+    MessageBox,
+    PushButton,
+    qconfig,
+)
 from qfluentwidgets.window.fluent_window import FluentWindowBase
 
 from gui_core import (
@@ -39,6 +45,7 @@ from gui_core import (
     mask_token,
     parse_progress,
     rename_profile,
+    summarize_failure,
     upsert_profile,
 )
 
@@ -72,6 +79,9 @@ class MainWindow(FluentWindowBase):
         self._loading_profile: bool = False
         self.q: queue.Queue = queue.Queue()
         self.worker: threading.Thread | None = None
+        # 本轮导出期间产生的人类可读日志（不含 __PROGRESS__ 机器行），
+        # 用于失败时挑一句摘要放到状态栏，不必让用户翻整段 traceback
+        self._run_log: list[str] = []
 
         # 内容从标题栏下方开始（高度取自 Fluent 标题栏自身的定高，不写死）
         self.hBoxLayout.setContentsMargins(0, self.titleBar.height(), 0, 0)
@@ -114,6 +124,13 @@ class MainWindow(FluentWindowBase):
         self.timer.timeout.connect(self._poll)
         self.timer.start()
 
+        # 系统主题变化（auto 模式下由系统切深浅色）时也要重刷日志颜色：
+        # 日志是逐行设色的，不重刷会留下「深色底 + 浅色字」或反之的错配色。
+        try:
+            qconfig.themeChangedFinished.connect(self._on_theme_changed)
+        except Exception:
+            pass  # 旧版 qfluentwidgets 没有这个信号时静默跳过，不影响功能
+
     # ---------- 信号 ----------
     def _wire_signals(self) -> None:
         page = self.page
@@ -131,6 +148,13 @@ class MainWindow(FluentWindowBase):
         page.open_btn.clicked.connect(self._open_out)
 
     # ---------- 主题 ----------
+    def _on_theme_changed(self) -> None:
+        """主题（含跟随系统时的自动切换）变化后重刷日志着色。"""
+        try:
+            self.page.log.refresh_colors()
+        except Exception:
+            pass
+
     def _update_theme_tooltip(self) -> None:
         self.page.theme_btn.setToolTip(
             f"主题：{theme_manager.theme_label(self._theme_name)}（点击切换）"
@@ -142,6 +166,8 @@ class MainWindow(FluentWindowBase):
         theme_manager.apply_theme(self._theme_name)
         theme_manager.save_theme(self._theme_name)
         self._update_theme_tooltip()
+        # 已写进日志的颜色是逐行设置的，主题一变要整体重刷，否则深色底上留着浅色系颜色
+        self.page.log.refresh_colors()
         self._append_log(f"界面主题已切换为「{theme_manager.theme_label(self._theme_name)}」")
 
     # ---------- 组合（仓库 + 输出目录 + Token + 选项） ----------
@@ -407,6 +433,7 @@ class MainWindow(FluentWindowBase):
     # ---------- 日志 / 进度 ----------
     def _append_log(self, s: str) -> None:
         self.page.log.append_line(s)
+        self._run_log.append(s)
 
     def _apply_progress(self, payload: str) -> None:
         info = parse_progress(payload)
@@ -429,6 +456,7 @@ class MainWindow(FluentWindowBase):
                     self._refresh_profile_choices(keep_current=self._current_profile_name())
                     self.page.status_label.setText("导出完成")
                     QApplication.beep()
+                    self._notify_success()
                 elif line == "__FAIL__":
                     self.page.run_btn.setEnabled(True)
                     self.page.run_btn.setText("开始导出")
@@ -438,13 +466,48 @@ class MainWindow(FluentWindowBase):
                     self._set_profile_btns_state(True)
                     # 保留进度条当前位置，便于定位卡在哪一步
                     self.page.progress.set_failed()
-                    self.page.status_label.setText("导出失败，请看日志")
+                    reason = summarize_failure(self._run_log)
+                    # 状态栏只放一句摘要（过长会挤掉后面的说明），完整信息在日志里
+                    self.page.status_label.setText(f"导出失败：{reason}")
+                    self._notify_failure(reason)
                 elif line.startswith("__PROGRESS__"):
                     self._apply_progress(line[len("__PROGRESS__"):])
                 else:
                     self._append_log(line)
         except queue.Empty:
             pass
+
+    # ---------- 完成/失败提示 ----------
+    def _notify_success(self) -> None:
+        """成功提示条：带「打开输出目录」按钮，省得再去操作栏点一次。"""
+        bar = InfoBar.success(
+            "导出完成",
+            "可以把整个输出目录拷进内网，双击 index.html 浏览",
+            parent=self,
+            position=InfoBarPosition.TOP,
+            duration=6000,
+            isClosable=True,
+        )
+        open_btn = PushButton("打开输出目录", bar)
+        open_btn.clicked.connect(self._open_out)
+        bar.addWidget(open_btn)
+
+    def _notify_failure(self, reason: str) -> None:
+        """失败提示条：常驻到用户关掉（duration=-1），因为失败往往需要立刻处理。
+
+        失败时也带「打开输出目录」：输出目录里通常已有半成品与日志，用户要进去看。
+        """
+        bar = InfoBar.error(
+            "导出失败",
+            reason,
+            parent=self,
+            position=InfoBarPosition.TOP,
+            duration=-1,
+            isClosable=True,
+        )
+        open_btn = PushButton("打开输出目录", bar)
+        open_btn.clicked.connect(self._open_out)
+        bar.addWidget(open_btn)
 
     # ---------- 参数 / 导出 ----------
     def _collect_args(self):
@@ -516,6 +579,7 @@ class MainWindow(FluentWindowBase):
         # 清掉上一轮的残留值，四段信息各自归零占位
         self.page.progress.set_starting()
         self.page.status_label.setText("正在导出…")
+        self._run_log = []  # 每轮重置，失败摘要只从本轮日志里挑
         self._append_log(f"开始导出 {args.repo} → {args.out}")
 
         # 导出前先记下当前控件对应的组合名与快照（工作线程不再碰界面）。

@@ -346,6 +346,88 @@ class LogWriter:
         pass
 
 
+# ---------- 日志分级（界面着色用，纯逻辑便于单测） ----------
+
+# 级别常量：界面按级别取颜色，测试直接比对字符串
+LOG_ERROR = "error"
+LOG_WARN = "warn"
+LOG_CACHE = "cache"
+LOG_SUCCESS = "success"
+LOG_INFO = "info"
+
+_ERROR_PREFIXES = ("[错误]", "[失败]", "错误：", "Traceback (most recent call last)")
+_WARN_PREFIXES = ("[警告]", "[rate-limit]")
+_SUCCESS_HINTS = ("导出完成", "已保存", "已新建组合", "已删除组合", "已重命名组合")
+
+
+def classify_log_line(line: str) -> str:
+    """把一行导出日志归类成 error / warn / cache / success / info。
+
+    导出核心（`export.py`）输出的文案是稳定的中文/英文前缀，这里只做**只读**判定，
+    不改任何日志内容 —— 界面着色失败最多是颜色不对，不会影响导出行为。
+
+    判定顺序很重要：`[缓存] ... 保存失败：xxx` 必须落在 error（写盘失败要让用户一眼看到），
+    所以「缓存 + 失败」要在普通缓存提示之前判掉。
+    """
+    text = (line or "").strip()
+    if not text:
+        return LOG_INFO
+
+    if text.startswith(_ERROR_PREFIXES):
+        return LOG_ERROR
+    # traceback 的续行：`  File "...", line N` / 裸的 `XxxError: ...`
+    stripped = text.lstrip()
+    if stripped.startswith('File "') and stripped is not text:
+        return LOG_ERROR
+    if stripped.startswith('File "'):
+        return LOG_ERROR
+    if "Error:" in text or "Exception:" in text:
+        return LOG_ERROR
+    # 缓存写盘失败同样属于错误（提示语承诺「已保存」却失败，用户必须看见）
+    if text.startswith("[缓存]") and "失败" in text:
+        return LOG_ERROR
+    if "失败" in text:
+        return LOG_ERROR
+
+    if text.startswith(_WARN_PREFIXES):
+        return LOG_WARN
+
+    if text.startswith("[缓存]"):
+        return LOG_CACHE
+
+    if any(hint in text for hint in _SUCCESS_HINTS):
+        return LOG_SUCCESS
+
+    return LOG_INFO
+
+
+def summarize_failure(lines: list) -> str:
+    """从错误相关的日志行里挑一句最适合放在界面上当「失败原因」的摘要。
+
+    优先用 `[错误]` 行（那是导出线程自己给的可读说明），其次任意 error 级行；
+    都没有就退回最后一条非空日志。结果截断到 160 字符，避免把整段 traceback 塞进状态栏。
+    """
+    picked = ""
+    for line in lines:
+        text = (line or "").strip()
+        if not text:
+            continue
+        if text.startswith("[错误]"):
+            picked = text
+            break
+        if not picked and classify_log_line(text) == LOG_ERROR:
+            picked = text
+    if not picked:
+        for line in reversed(lines):
+            text = (line or "").strip()
+            if text:
+                picked = text
+                break
+    if not picked:
+        return "导出失败，详见日志"
+    return picked if len(picked) <= 160 else picked[:157] + "..."
+
+
 # ---------- 进度协议（__PROGRESS__{json}） ----------
 
 def parse_progress(payload: str) -> Optional[dict]:

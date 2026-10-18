@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QTextCursor
+from PyQt6.QtGui import QTextCharFormat, QTextCursor
 from PyQt6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
 from qfluentwidgets import (
     BodyLabel,
@@ -16,7 +16,10 @@ from qfluentwidgets import (
     PushButton,
     SimpleCardWidget,
     SubtitleLabel,
+    isDarkTheme,
 )
+
+from gui_core import classify_log_line
 
 from .theme import (
     BAR_HEIGHT,
@@ -30,6 +33,7 @@ from .theme import (
     PCT_WIDTH,
     ROW_SPACING,
     STAGES_WIDTH,
+    log_color,
     log_font,
 )
 
@@ -157,7 +161,11 @@ class ActionBar(QWidget):
 
 
 class LogPanel(QWidget):
-    """日志区：等宽、只读、自动滚到底、超过上限从头裁掉（配合导出长跑）。"""
+    """日志区：等宽、只读、自动滚到底、按语义着色、超过上限从头裁掉（配合导出长跑）。
+
+    着色只影响观感：级别由 `gui_core.classify_log_line` 判定，取不到颜色就跟随默认前景色。
+    主题切换后调用 `refresh_colors()` 重新上色（已写进文档的日志不会自己变色）。
+    """
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -170,31 +178,77 @@ class LogPanel(QWidget):
         self.text.setPlaceholderText("导出日志会显示在这里")
         self.vBoxLayout.addWidget(self.text)
 
+        # (起始位置, 结束位置, 级别)，主题切换时按这个表重刷颜色
+        self._spans: list[tuple[int, int, str]] = []
+
     def append_line(self, line: str) -> None:
-        self.text.appendPlainText(line)
+        level = classify_log_line(line)
+        cursor = QTextCursor(self.text.document())
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        # 必须先清掉字符格式：新插入的文本会**继承前一个字符的格式**，
+        # 否则上一行的错误红会一路串到后面所有行（实测过）。
+        cursor.setCharFormat(QTextCharFormat())
+        start = cursor.position()
+        cursor.insertText(line + "\n")
+        end = cursor.position()
+        self._spans.append((start, end, level))
+        self._apply_span_color(start, end, level)
         self._trim()
         scrollbar = self.text.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
     def clear_log(self) -> None:
         self.text.clear()
+        self._spans.clear()
 
     def line_count(self) -> int:
         return int(self.text.document().blockCount())
+
+    def refresh_colors(self) -> None:
+        """主题切换后重刷所有已写日志的颜色。"""
+        for start, end, level in self._spans:
+            self._apply_span_color(start, end, level)
+
+    def _apply_span_color(self, start: int, end: int, level: str) -> None:
+        """给 [start, end) 这一段上色。
+
+        每一行都显式设色（含 info）：QTextDocument 里新插入的文本会继承前一个字符的
+        字符格式，若普通行不上色，错误红会串到后面所有行；若用空格式重置又会变成纯黑，
+        深色主题下看不见。所以颜色表里连 info 一起定义，插入与重刷都走这里。
+        """
+        color = log_color(level, isDarkTheme())
+        if color is None:
+            return
+        cursor = QTextCursor(self.text.document())
+        cursor.setPosition(start)
+        cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+        fmt = QTextCharFormat()
+        fmt.setForeground(color)
+        cursor.mergeCharFormat(fmt)
 
     def _trim(self) -> None:
         """行数超限时从头部删掉 1000 行，避免长跑导出把内存和重绘拖垮。"""
         doc = self.text.document()
         if doc.blockCount() <= LOG_MAX_LINES:
             return
+        # 记录被删掉的行，免得 _spans 越积越多、也免得重刷颜色时位置错位
+        removed_lines = 1000
         cursor = QTextCursor(doc)
         cursor.movePosition(QTextCursor.MoveOperation.Start)
         cursor.movePosition(
             QTextCursor.MoveOperation.NextBlock,
             QTextCursor.MoveMode.KeepAnchor,
-            1000,
+            removed_lines,
         )
+        cut_pos = cursor.selectionEnd()
         cursor.removeSelectedText()
+
+        kept = []
+        for start, end, level in self._spans:
+            if end <= cut_pos:
+                continue  # 整行已被裁掉
+            kept.append((max(start - cut_pos, 0), end - cut_pos, level))
+        self._spans = kept
 
 
 class TextInputDialog(MessageBoxBase):
