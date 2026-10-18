@@ -16,7 +16,6 @@ from PyQt6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
 from qfluentwidgets import (
     BodyLabel,
     CaptionLabel,
-    CheckBox,
     ComboBox,
     FluentIcon,
     LineEdit,
@@ -28,7 +27,7 @@ from qfluentwidgets import (
 )
 
 from .theme import CARD_SPACING, FIELD_SPACING, PAGE_MARGIN
-from .widgets import ActionBar, FormRow, LogPanel, SectionCard
+from .widgets import ActionBar, FocusCheckBox, FormRow, LogPanel, SectionCard
 
 
 class ExportPage(QWidget):
@@ -190,8 +189,8 @@ class ExportPage(QWidget):
         card.bodyLayout.addWidget(token_row)
 
         extra = FormRow("", card)
-        self.show_token_check = CheckBox("显示明文", card)
-        self.remember_check = CheckBox("记住到本机缓存", card)
+        self.show_token_check = FocusCheckBox("显示明文", card)
+        self.remember_check = FocusCheckBox("记住到本机缓存", card)
         self.remember_check.setChecked(True)
         extra.add(self.show_token_check)
         extra.add(self.remember_check)
@@ -225,12 +224,12 @@ class ExportPage(QWidget):
     def _build_options_card(self, parent) -> None:
         card = SectionCard(parent)
 
-        self.skip_details_check = CheckBox("跳过 diff / 评论", card)
-        self.include_contents_check = CheckBox("缓存源码", card)
+        self.skip_details_check = FocusCheckBox("跳过 diff / 评论", card)
+        self.include_contents_check = FocusCheckBox("缓存源码", card)
         self.include_contents_check.setChecked(True)
-        self.force_check = CheckBox("覆盖输出目录", card)
+        self.force_check = FocusCheckBox("覆盖输出目录", card)
         self.force_check.setChecked(True)
-        self.incremental_check = CheckBox("增量导出", card)
+        self.incremental_check = FocusCheckBox("增量导出", card)
         self.incremental_check.setChecked(True)
 
         row = FormRow("选项", card)

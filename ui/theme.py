@@ -46,6 +46,10 @@ LOG_COLORS = {
 # 品牌色（用于 Fluent 的强调色）
 BRAND_COLOR = "#0969da"
 
+# 键盘焦点环（light, dark）。qfluentwidgets 的 CheckBox 不画焦点态，需要自己补一圈虚线框；
+# 按钮/输入框自带焦点样式，不套用这个。
+FOCUS_RING_COLOR = ("#0969da", "#539bf5")
+
 
 def log_font() -> QFont:
     """日志区等宽字体：首选项缺失时自动回落到系统等宽字体。"""

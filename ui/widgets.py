@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QTextCharFormat, QTextCursor
+from PyQt6.QtGui import QColor, QPainter, QPen, QTextCharFormat, QTextCursor
 from PyQt6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
 from qfluentwidgets import (
     Action,
     BodyLabel,
     CaptionLabel,
+    CheckBox,
     FluentIcon,
     LineEdit,
     MessageBoxBase,
@@ -30,6 +31,7 @@ from .theme import (
     CARD_PADDING,
     COUNT_WIDTH,
     FIELD_SPACING,
+    FOCUS_RING_COLOR,
     GAP,
     LABEL_WIDTH,
     LOG_MAX_LINES,
@@ -39,6 +41,39 @@ from .theme import (
     log_color,
     log_font,
 )
+
+
+class FocusCheckBox(CheckBox):
+    """带焦点环的 Fluent 复选框。
+
+    为什么需要这个类：qfluentwidgets 的 `CheckBox.paintEvent()` 只画「指示器 + 勾」，
+    **完全没有 hasFocus 分支**，所以用 Tab 走到勾选框时屏幕上没有任何变化，用户不知道
+    当前焦点在哪（实测确认）。这里在基类画完之后补一圈虚线焦点框。
+
+    为什么用虚线圈而不是改填充色：勾选框的填充色已经承载了「勾选 / 未勾选」语义
+    （勾选是主题色实心、未勾选是描边），再拿颜色表达焦点会让两者混淆。
+    """
+
+    def paintEvent(self, e) -> None:
+        super().paintEvent(e)
+        if not self.hasFocus():
+            return
+        painter = QPainter(self)
+        painter.setRenderHints(QPainter.RenderHint.Antialiasing)
+        pen = QPen(QColor(FOCUS_RING_COLOR[1] if isDarkTheme() else FOCUS_RING_COLOR[0]))
+        pen.setWidth(2)
+        pen.setStyle(Qt.PenStyle.DashLine)  # 虚线，区别于「勾选态」的实线边框
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 4, 4)
+
+    def focusInEvent(self, e) -> None:
+        super().focusInEvent(e)
+        self.update()
+
+    def focusOutEvent(self, e) -> None:
+        super().focusOutEvent(e)
+        self.update()
 
 
 class SectionCard(SimpleCardWidget):

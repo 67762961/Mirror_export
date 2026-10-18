@@ -110,16 +110,18 @@ class MainWindow(FluentWindowBase):
             self.page.incremental_check,
         ]
 
+        # 主题必须**先**应用，再写日志：
+        # LogPanel 是逐行按「写入当时」的主题取色，若先写日志再切深色，启动时那几行
+        # （Mirror_export / 说明 / 分隔线）会留着浅色正文色 —— 深色主题下几乎看不见。
+        self._theme_name = theme_manager.load_theme()
+        theme_manager.apply_theme(self._theme_name)
+        self._update_theme_tooltip()
+
         self._wire_signals()
         self._append_log("Mirror_export")
         self._append_log("选组合（或直接填字段后「另存为…」）→ 开始导出 → 拷贝输出目录到内网")
         self._append_log("-" * 48)
         self._load_defaults()
-
-        # 主题：默认跟随系统，可在右上角按钮里切 浅色 / 深色 / 跟随系统
-        self._theme_name = theme_manager.load_theme()
-        theme_manager.apply_theme(self._theme_name)
-        self._update_theme_tooltip()
 
         self.timer = QTimer(self)
         self.timer.setInterval(80)
@@ -206,6 +208,7 @@ class MainWindow(FluentWindowBase):
         """清空日志：机器行本来就不进日志框，这里只清人类可读日志。"""
         self.page.log.clear_log()
         self.page.status_label.setText("日志已清空")
+
     # ---------- 主题 ----------
     def _on_theme_changed(self) -> None:
         """主题（含跟随系统时的自动切换）变化后重刷日志着色。"""
