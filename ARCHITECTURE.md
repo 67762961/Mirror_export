@@ -288,6 +288,21 @@ python export.py --repo owner/name --full   # 强制全量
     其次任意 error 级行，兜底最后一条），放进状态栏 + 常驻 `InfoBar.error`（`duration=-1`，
     失败往往要立刻处理）；`__DONE__` 用 `InfoBar.success`（6s）并附「打开输出目录」按钮。
     `self._run_log` 每轮 `_start()` 重置，避免上一轮的错误被当成本轮原因。
+- **键盘与无障碍（PR3）**：
+  - Tab 顺序在 `ExportPage._setup_tab_order()` 里**显式**设置：Qt 默认按**控件创建顺序**走焦点链，
+    而本页面为排版方便先建表单再建底部操作栏，导致 Tab 会先跳到日志框再跳回按钮。
+    顺序按「从上到下、从左到右」，并在末尾用 `setTabOrder(order[-1], order[0])` 闭环 ——
+    不显式闭环时焦点链会接到内部子部件（实测跳到滚动区内容体 `QWidget`），走一圈后焦点丢失。
+  - 焦点链里包含控件内部子部件（如 `PlainTextEdit` 的 `qt_scrollarea_viewport`），
+    所以断言/测试只能验「我们关心的控件的相对顺序」，不能断言「下一个就是某某」。
+  - 快捷键：`Enter` 触发导出、`Ctrl+Shift+L` 清空日志，都用 `QShortcut` +
+    `WidgetWithChildrenShortcut` 绑在窗口上（只在窗口激活时生效，不当全局热键）。
+    用 `Ctrl+Shift+L` 而非 `Ctrl+L`：后者在输入框里是「选中行」的常见语义。
+  - 日志右键菜单（复制全部 / 另存为文件 / 清空日志）由 `LogPanel` 抛信号
+    （`copyRequested` / `saveRequested` / `clearRequested`），控制器接线并负责写盘 ——
+    面板本身不碰文件系统，便于单测。
+  - 空闲状态两句文案（`ExportPage.IDLE_TEXT` / `IDLE_NO_PROFILE_TEXT`）按「有没有组合」切换；
+    删除最后一个组合、清除缓存后也要切回「还没有组合」，否则会显示与实际不符的提示。
   - 布局（操作栏，从左到右）：**按钮 / 按钮 / 进度条 / 百分比 / 总任务进度 / 阶段内计数 / 说明文本**。
     例如 `▓▓▓░░ 47%  9/15  120/540  文件内容 · src/main.py`：
     - **百分比**列：`overall`；

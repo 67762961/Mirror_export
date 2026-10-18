@@ -19,9 +19,11 @@ import queue
 import sys
 import threading
 import traceback
+from datetime import datetime
 from pathlib import Path
 
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import QApplication, QFileDialog
 from qfluentwidgets import (
     InfoBar,
@@ -108,16 +110,18 @@ class MainWindow(FluentWindowBase):
             self.page.incremental_check,
         ]
 
+        # 主题必须**先**应用，再写日志：
+        # LogPanel 是逐行按「写入当时」的主题取色，若先写日志再切深色，启动时那几行
+        # （Mirror_export / 说明 / 分隔线）会留着浅色正文色 —— 深色主题下几乎看不见。
+        self._theme_name = theme_manager.load_theme()
+        theme_manager.apply_theme(self._theme_name)
+        self._update_theme_tooltip()
+
         self._wire_signals()
         self._append_log("Mirror_export")
         self._append_log("选组合（或直接填字段后「另存为…」）→ 开始导出 → 拷贝输出目录到内网")
         self._append_log("-" * 48)
         self._load_defaults()
-
-        # 主题：默认跟随系统，可在右上角按钮里切 浅色 / 深色 / 跟随系统
-        self._theme_name = theme_manager.load_theme()
-        theme_manager.apply_theme(self._theme_name)
-        self._update_theme_tooltip()
 
         self.timer = QTimer(self)
         self.timer.setInterval(80)
@@ -146,6 +150,64 @@ class MainWindow(FluentWindowBase):
         page.theme_btn.clicked.connect(self._toggle_theme)
         page.run_btn.clicked.connect(self._start)
         page.open_btn.clicked.connect(self._open_out)
+        # 日志右键菜单：面板只抛信号，动作在这里接线（面板不碰文件系统，便于单测）
+        page.log.copyRequested.connect(self._copy_log)
+        page.log.saveRequested.connect(self._save_log)
+        page.log.clearRequested.connect(self._clear_log)
+        # 键盘：Enter 开始导出（输入框里按 Enter 也算），Ctrl+L 清空日志
+        self._install_shortcuts()
+
+    def _install_shortcuts(self) -> None:
+        """键盘快捷方式：Enter 导出 / Ctrl+Shift+L 清日志。
+
+        用 QShortcut + WidgetWithChildrenShortcut 绑在本窗口上，避免全局热键影响其他程序。
+        Enter 只在**没有打开对话框**时生效：QShortcut 天然只在窗口激活时触发，够用。
+        """
+        enter = QShortcut(QKeySequence(Qt.Key.Key_Return), self)
+        enter.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        enter.activated.connect(self._start)
+        self._shortcut_enter = enter
+
+        # Ctrl+Shift+L 而不是 Ctrl+L：后者在输入框里是「选中行」的常见语义
+        clear_log = QShortcut(QKeySequence("Ctrl+Shift+L"), self)
+        clear_log.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        clear_log.activated.connect(self._clear_log)
+        self._shortcut_clear_log = clear_log
+
+    # ---------- 日志右键动作 ----------
+    def _copy_log(self) -> None:
+        text = self.page.log.to_plain_text()
+        if not text.strip():
+            InfoBar.info("日志为空", "还没有可复制的内容", parent=self,
+                         position=InfoBarPosition.TOP, duration=2000)
+            return
+        QApplication.clipboard().setText(text)
+        InfoBar.success("已复制", f"共 {len(text.splitlines())} 行日志已复制到剪贴板",
+                        parent=self, position=InfoBarPosition.TOP, duration=2000)
+
+    def _save_log(self) -> None:
+        text = self.page.log.to_plain_text()
+        if not text.strip():
+            InfoBar.info("日志为空", "还没有可保存的内容", parent=self,
+                         position=InfoBarPosition.TOP, duration=2000)
+            return
+        default_name = f"mirror-export-{datetime.now().strftime('%Y%m%d-%H%M%S')}.log"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "保存日志", str(EXE_DIR / default_name), "日志文件 (*.log);;文本文件 (*.txt);;所有文件 (*)"
+        )
+        if not path:
+            return
+        try:
+            Path(path).write_text(text, encoding="utf-8")
+        except Exception as e:
+            self._warn("保存失败", f"日志写入失败：{e}")
+            return
+        self._append_log(f"[缓存] 日志已保存 → {path}")
+
+    def _clear_log(self) -> None:
+        """清空日志：机器行本来就不进日志框，这里只清人类可读日志。"""
+        self.page.log.clear_log()
+        self.page.status_label.setText("日志已清空")
 
     # ---------- 主题 ----------
     def _on_theme_changed(self) -> None:
@@ -365,6 +427,8 @@ class MainWindow(FluentWindowBase):
             return
         delete_profile(name)
         self._refresh_profile_choices(apply=True)
+        if not list_profiles():
+            self.page.status_label.setText(ExportPage.IDLE_NO_PROFILE_TEXT)
         self._append_log(f"已删除组合「{name}」")
 
     def _load_defaults(self) -> None:
@@ -373,6 +437,9 @@ class MainWindow(FluentWindowBase):
         if p:
             self._apply_profile(p)
         self._refresh_profile_choices(keep_current=p.get("name") if p else "")
+        self.page.status_label.setText(
+            ExportPage.IDLE_TEXT if p else ExportPage.IDLE_NO_PROFILE_TEXT
+        )
         if not p:
             # 全新使用：没有组合时用环境变量里的 Token 打个底
             env = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or ""
@@ -418,6 +485,7 @@ class MainWindow(FluentWindowBase):
         except Exception:
             pass
         self._append_log("已清除本机组合缓存（仓库 / 输出目录 / Token / 数量上限 / 选项均已恢复默认）")
+        self.page.status_label.setText(ExportPage.IDLE_NO_PROFILE_TEXT)
 
     # ---------- 输出目录 ----------
     def _pick_out(self) -> None:

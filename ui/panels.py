@@ -16,7 +16,6 @@ from PyQt6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
 from qfluentwidgets import (
     BodyLabel,
     CaptionLabel,
-    CheckBox,
     ComboBox,
     FluentIcon,
     LineEdit,
@@ -28,7 +27,7 @@ from qfluentwidgets import (
 )
 
 from .theme import CARD_SPACING, FIELD_SPACING, PAGE_MARGIN
-from .widgets import ActionBar, FormRow, LogPanel, SectionCard
+from .widgets import ActionBar, FocusCheckBox, FormRow, LogPanel, SectionCard
 
 
 class ExportPage(QWidget):
@@ -71,10 +70,49 @@ class ExportPage(QWidget):
 
         self._build_log()
 
-        self.status_label = BodyLabel(
-            "就绪 · 导出完成后拷入内网，双击 index.html", self
-        )
+        self.status_label = BodyLabel(self.IDLE_TEXT, self)
         self.vBoxLayout.addWidget(self.status_label)
+
+        self._setup_tab_order()
+
+    # 空闲状态文案：没有组合时提示「先建组合」，有组合时提示「导出后拷进内网」。
+    # 两段都保持一句话，避免状态栏换行把下面的日志区挤掉。
+    IDLE_TEXT = "就绪 · 导出完成后拷入内网，双击 index.html"
+    IDLE_NO_PROFILE_TEXT = "就绪 · 还没有组合，填好参数后点「另存为…」保存一套"
+
+    def _setup_tab_order(self) -> None:
+        """Tab 顺序按「从上到下、从左到右」的视觉顺序走。
+
+        Qt 默认顺序是**控件创建顺序**，而本页面为排版方便先建表单再建底部操作栏，
+        导致 Tab 会先跳到日志框再跳回按钮。这里显式排一遍。
+        """
+        order = [
+            self.profile_combo,
+            *self.profile_btns,
+            self.repo_edit,
+            self.out_edit,
+            self.browse_btn,
+            self.token_edit,
+            self.show_token_check,
+            self.remember_check,
+            self.clear_btn,
+            self.max_prs,
+            self.max_issues,
+            self.max_commits,
+            self.max_tags,
+            self.skip_details_check,
+            self.include_contents_check,
+            self.force_check,
+            self.incremental_check,
+            self.run_btn,
+            self.open_btn,
+            self.log.text,
+        ]
+        for first, second in zip(order, order[1:]):
+            QWidget.setTabOrder(first, second)
+        # 收尾：最后一个（日志框）回到第一个，形成闭环。不显式设的话 Qt 会按创建顺序
+        # 接到别的控件上（实测会跳到滚动区的内容体 QWidget），Tab 走一圈后焦点就丢了。
+        QWidget.setTabOrder(order[-1], order[0])
 
     # ---------- 各区块 ----------
     def _build_header(self, parent) -> None:
@@ -151,8 +189,8 @@ class ExportPage(QWidget):
         card.bodyLayout.addWidget(token_row)
 
         extra = FormRow("", card)
-        self.show_token_check = CheckBox("显示明文", card)
-        self.remember_check = CheckBox("记住到本机缓存", card)
+        self.show_token_check = FocusCheckBox("显示明文", card)
+        self.remember_check = FocusCheckBox("记住到本机缓存", card)
         self.remember_check.setChecked(True)
         extra.add(self.show_token_check)
         extra.add(self.remember_check)
@@ -186,12 +224,12 @@ class ExportPage(QWidget):
     def _build_options_card(self, parent) -> None:
         card = SectionCard(parent)
 
-        self.skip_details_check = CheckBox("跳过 diff / 评论", card)
-        self.include_contents_check = CheckBox("缓存源码", card)
+        self.skip_details_check = FocusCheckBox("跳过 diff / 评论", card)
+        self.include_contents_check = FocusCheckBox("缓存源码", card)
         self.include_contents_check.setChecked(True)
-        self.force_check = CheckBox("覆盖输出目录", card)
+        self.force_check = FocusCheckBox("覆盖输出目录", card)
         self.force_check.setChecked(True)
-        self.incremental_check = CheckBox("增量导出", card)
+        self.incremental_check = FocusCheckBox("增量导出", card)
         self.incremental_check.setChecked(True)
 
         row = FormRow("选项", card)

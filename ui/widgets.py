@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QTextCharFormat, QTextCursor
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QPainter, QPen, QTextCharFormat, QTextCursor
 from PyQt6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
 from qfluentwidgets import (
+    Action,
     BodyLabel,
     CaptionLabel,
+    CheckBox,
+    FluentIcon,
     LineEdit,
     MessageBoxBase,
     PlainTextEdit,
     PrimaryPushButton,
     ProgressBar,
     PushButton,
+    RoundMenu,
     SimpleCardWidget,
     SubtitleLabel,
     isDarkTheme,
@@ -27,6 +31,7 @@ from .theme import (
     CARD_PADDING,
     COUNT_WIDTH,
     FIELD_SPACING,
+    FOCUS_RING_COLOR,
     GAP,
     LABEL_WIDTH,
     LOG_MAX_LINES,
@@ -36,6 +41,39 @@ from .theme import (
     log_color,
     log_font,
 )
+
+
+class FocusCheckBox(CheckBox):
+    """带焦点环的 Fluent 复选框。
+
+    为什么需要这个类：qfluentwidgets 的 `CheckBox.paintEvent()` 只画「指示器 + 勾」，
+    **完全没有 hasFocus 分支**，所以用 Tab 走到勾选框时屏幕上没有任何变化，用户不知道
+    当前焦点在哪（实测确认）。这里在基类画完之后补一圈虚线焦点框。
+
+    为什么用虚线圈而不是改填充色：勾选框的填充色已经承载了「勾选 / 未勾选」语义
+    （勾选是主题色实心、未勾选是描边），再拿颜色表达焦点会让两者混淆。
+    """
+
+    def paintEvent(self, e) -> None:
+        super().paintEvent(e)
+        if not self.hasFocus():
+            return
+        painter = QPainter(self)
+        painter.setRenderHints(QPainter.RenderHint.Antialiasing)
+        pen = QPen(QColor(FOCUS_RING_COLOR[1] if isDarkTheme() else FOCUS_RING_COLOR[0]))
+        pen.setWidth(2)
+        pen.setStyle(Qt.PenStyle.DashLine)  # 虚线，区别于「勾选态」的实线边框
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 4, 4)
+
+    def focusInEvent(self, e) -> None:
+        super().focusInEvent(e)
+        self.update()
+
+    def focusOutEvent(self, e) -> None:
+        super().focusOutEvent(e)
+        self.update()
 
 
 class SectionCard(SimpleCardWidget):
@@ -161,11 +199,18 @@ class ActionBar(QWidget):
 
 
 class LogPanel(QWidget):
-    """日志区：等宽、只读、自动滚到底、按语义着色、超过上限从头裁掉（配合导出长跑）。
+    """日志区：等宽、只读、自动滚到底、按语义着色、右键菜单、超过上限从头裁掉。
 
     着色只影响观感：级别由 `gui_core.classify_log_line` 判定，取不到颜色就跟随默认前景色。
     主题切换后调用 `refresh_colors()` 重新上色（已写进文档的日志不会自己变色）。
+
+    右键菜单（复制全部 / 另存为文件 / 清空日志）只在这里弹，具体动作由控制器接线 ——
+    面板不碰文件系统，方便单测。
     """
+
+    copyRequested = pyqtSignal()
+    saveRequested = pyqtSignal()
+    clearRequested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -175,11 +220,35 @@ class LogPanel(QWidget):
         self.text = PlainTextEdit(self)
         self.text.setReadOnly(True)
         self.text.setFont(log_font())
-        self.text.setPlaceholderText("导出日志会显示在这里")
+        self.text.setPlaceholderText("导出日志会显示在这里（右键可复制 / 另存为 / 清空）")
+        self.text.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.text.customContextMenuRequested.connect(self._show_menu)
         self.vBoxLayout.addWidget(self.text)
 
         # (起始位置, 结束位置, 级别)，主题切换时按这个表重刷颜色
         self._spans: list[tuple[int, int, str]] = []
+
+    def _show_menu(self, pos) -> None:
+        menu = RoundMenu(parent=self.text)
+
+        copy_action = Action(FluentIcon.COPY, "复制全部", menu)
+        copy_action.triggered.connect(self.copyRequested.emit)
+        menu.addAction(copy_action)
+
+        save_action = Action(FluentIcon.SAVE, "另存为文件…", menu)
+        save_action.triggered.connect(self.saveRequested.emit)
+        menu.addAction(save_action)
+
+        menu.addSeparator()
+
+        clear_action = Action(FluentIcon.DELETE, "清空日志", menu)
+        clear_action.triggered.connect(self.clearRequested.emit)
+        menu.addAction(clear_action)
+
+        menu.exec(self.text.mapToGlobal(pos))
+
+    def to_plain_text(self) -> str:
+        return self.text.toPlainText()
 
     def append_line(self, line: str) -> None:
         level = classify_log_line(line)
