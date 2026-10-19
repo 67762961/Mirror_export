@@ -475,8 +475,28 @@ window.GH_DATA=window.GH_DATA||{};window.GH_DATA.<name>=<compact-json>;
 
 - 源码运行：`python app_gui.py`（界面需 `PyQt6` + `PyQt6-Fluent-Widgets`，导出核心仍只要标准库）或 `python export.py ...`；
 - 打包 exe：PyInstaller 打包 `app_gui.py`，并把 `viewer/`、`export.py`、`assets` 图标一并打入；运行时 `sys.frozen` 为真，资源目录为 `_MEIPASS`；
-  - Qt 侧要显式排除用不到的重依赖（`numpy` / `scipy` / `PIL` / `cv2` / `tkinter` / `PyQt6.QtQuick` / `PyQt6.QtQml`），**但必须保留 pywin32（`win32com`）**：`qframelesswindow` 的无边框窗口要 `win32comext.shell`，排掉会启动即崩（实测 `ModuleNotFoundError: win32com`）。实测体积：显式排除后 onefile ≈ 39 MB（不排除 numpy/scipy/PIL 时 ≈ 98 MB，多出来的全是 qfluentwidgets 毛玻璃 `AcrylicBrush` 间接引入的科学计算库）；
-  - 默认用 **Mica（Win11 原生 DWM 背景材质）**，不启用 `AcrylicBrush` 毛玻璃，这样才不需要 numpy/scipy；缺依赖时 `acrylic_label` 自身有 `try/except ImportError` 兜底，毛玻璃自动退化为纯色；
+  - `build_exe.py` 会先做**界面依赖自检**（`find_spec("PyQt6" / "qfluentwidgets" / "qframelesswindow")`），
+    缺包直接报错退出 —— 否则会打出一个「双击就闪退、用户完全看不出原因」的 exe。
+  - Qt 侧要显式排除用不到的重依赖（`numpy` / `scipy` / `pandas` / `matplotlib` / `PIL` / `cv2` /
+    `tkinter` / `PyQt6.QtQuick` / `QtQml` / `QtMultimedia` / `QtWebEngine*` / `QtPdf` / `QtDesigner`），
+    **但必须保留 pywin32（`win32com`）**：`qframelesswindow` 的无边框窗口要 `win32comext.shell`，
+    排掉会启动即崩（实测 `ModuleNotFoundError: win32com`）。
+  - **实测体积（PyInstaller 6.18.0 / PyQt6 6.7.1 / qfluentwidgets 1.11.3 / onefile）**：
+
+    | 配置 | 体积 |
+    |---|---|
+    | 旧 Tkinter 版（历史产物） | 15.42 MB |
+    | 不排除任何模块 | 97.80 MB |
+    | **当前配置（显式排除上列重依赖）** | **39.78 MB** |
+
+    多出来的约 59 MB 全是 qfluentwidgets 毛玻璃 `AcrylicBrush` → `common/image_utils.py`
+    顶层 `import numpy / PIL / scipy` 间接引入的科学计算栈。
+  - 默认用 **Mica（Win11 原生 DWM 背景材质）**，不启用 `AcrylicBrush` 毛玻璃，这样才不需要 numpy/scipy；
+    缺依赖时 `acrylic_label` 自身有 `try/except ImportError` 兜底，毛玻璃自动退化为纯色。
+  - 中间产物路径可用环境变量覆盖（`MIRROR_BUILD_DIR` / `MIRROR_DIST_DIR`），
+    用于「Python 无权在项目目录建子目录」的受限环境。
+  - 删除旧 exe 时**不能直接 `unlink`**：Windows 上旧 exe 即使进程已退出也可能残留句柄导致
+    `PermissionError`，但 **rename 通常能成功** → `remove_locked_artifact()` 先改名再删。
 - `copy_viewer` 从 `app_root()/viewer` 复制到输出目录，**按白名单逐文件复制**（`index.html` / `css/app.css` / `js/app.js` / `js/gitgraph.js`），缺文件会直接报错；新增 viewer 文件必须同步该白名单。
 
 ## 9. 实施约束
