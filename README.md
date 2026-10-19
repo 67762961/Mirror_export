@@ -28,6 +28,28 @@
 配置缓存文件：exe 同目录的 `gh_token_cache.json`（保存全部组合：仓库、输出目录、Token、选项）。
 旧版缓存（按 Token 平铺的格式）首次启动会**自动迁移**成组合，无需手动处理。
 
+界面小提示：`Enter` 直接开始导出，`Ctrl+Shift+L` 清空日志；日志区**右键**可复制 / 另存为 / 清空；
+右上角按钮切换 跟随系统 / 浅色 / 深色。
+
+#### 打包 exe（开发者）
+
+```powershell
+# 需要装有界面依赖的解释器（PyQt6 + PyQt6-Fluent-Widgets）
+pip install PyQt6 PyQt6-Fluent-Widgets
+python build_exe.py
+```
+
+- 产物：`dist/Mirror_export.exe`，**单文件约 39.8 MB**（旧 Tkinter 版为 15.4 MB，换成 Qt 后的正常增量）。
+- 脚本会先做**界面依赖自检**：缺 PyQt6 / qfluentwidgets / qframelesswindow 直接报错，
+  而不是打出一个双击就闪退的 exe。
+- 体积构成：Qt 运行库（`Qt6Core/Gui/Widgets` + `opengl32sw` + 插件）约 50 MB、
+  PyQt6 绑定层约 10 MB、`python311.dll` 5.5 MB、pywin32 约 7 MB。
+- 脚本显式排除 `numpy` / `scipy` / `PIL` / `cv2` / `tkinter` / QtQuick / QtQml 等重依赖
+  （qfluentwidgets 的毛玻璃模块会间接拉进科学计算栈，约 +59 MB；本项目默认用 Mica 不用毛玻璃）。
+  **必须保留 pywin32**：`qframelesswindow` 的无边框窗口依赖 `win32comext.shell`，排掉会启动即崩。
+- 受限环境（Python 无权在项目目录建子目录）可用环境变量把中间产物挪走：
+  `MIRROR_BUILD_DIR`（work/spec）、`MIRROR_DIST_DIR`（最终 exe）。
+
 #### 关于「组合」
 
 一个组合 = 一套完整的导出参数，打包保存、整体切换，多个项目互不干扰：

@@ -15,6 +15,7 @@
 
 ### 编码规范
 - 导出核心统一放在 `export.py`：HTTP、分页、字段裁剪、增量合并、写出 `data/*.js`。
+- 打包约定（改 `build_exe.py` 前先读）：① 打包前必须做**界面依赖自检**（`PyQt6` / `qfluentwidgets` / `qframelesswindow`），缺包直接报错，否则会打出「双击就闪退」的 exe；② 必须排除 `numpy` / `scipy` / `pandas` / `matplotlib` / `PIL` / `cv2` / `tkinter` / `PyQt6.QtQuick` / `QtQml` / `QtMultimedia` / `QtWebEngine*` / `QtPdf` / `QtDesigner`（qfluentwidgets 毛玻璃间接拉进科学计算栈，约 +59 MB）；③ **必须保留 pywin32**（`win32com`）——`qframelesswindow` 的无边框窗口依赖它，排掉启动即崩；④ 实测体积 **39.78 MB**（不排除任何模块是 97.80 MB，旧 Tk 版 15.42 MB），若将来启用毛玻璃 `AcrylicBrush` 必须取消 ② 的排除、体积回到约 98 MB；⑤ 删旧 exe **不能直接 `unlink`**——Windows 上旧 exe 即使进程已退出也可能残留句柄报 `PermissionError`，但 `rename` 通常能成功，用 `remove_locked_artifact()`；⑥ 受限环境（Python 无权在项目目录建子目录）用 `MIRROR_BUILD_DIR` / `MIRROR_DIST_DIR` 把中间产物挪到可写位置。
 - 界面分层：`app_gui.py` 只做启动（补 `sys.path` / 依赖自检 / 创建 QApplication），`ui/` 放界面（`window.py` 控制器 + `panels.py` 布局 + `widgets.py` 小组件 + `theme*.py` / `icons.py`），与界面无关的逻辑（组合缓存、`__PROGRESS__` 解析、`LogWriter`）在 `gui_core.py`。**禁止在 `ui/` 里另写一份缓存读写或进度口径**——两条实现必然分叉，那正是这些语义以前反复出问题的地方。界面只通过 `export_mod.export(args)` 调用导出核心；进度依赖 stdout 中的 `__PROGRESS__{json}` 机器行。
 - 进度由 `export.py` 顶部的 `STAGES` 阶段表驱动，**新增阶段必须在此登记**，否则该段进度会缺失；阶段内高频循环用 `make_throttle(1)` 按每 1% 节流上报，且**命中增量缓存的条目也要计入 done**（上报点放在 `continue` 之前），否则纯增量导出时进度条会长时间不动。`_SEEN_STAGES` / `_STAGE_DECLARED` / `_LAST_OVERALL` 是**单轮状态**，同一进程内连续导出（GUI 切换组合再导出）必须在 `export()` 开头调用 `reset_progress()`，否则上一轮遗留的 100% 会让新一轮首帧直接冲到 100%。机器行字段与跳过阶段的折算规则见 ARCHITECTURE.md「进度协议」。
 - 进度上报的三条硬约束（改任何 `progress()` 调用点前先核对）：
