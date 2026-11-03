@@ -50,7 +50,7 @@ Mirror_export/
 ├── gui_core.py                     与界面无关的公共逻辑（组合缓存 / 进度解析 / 日志队列）
 ├── ui/                             Fluent 界面层（PyQt6 + PyQt6-Fluent-Widgets）
 │   ├── window.py                   主窗口与控制器（组合 / Token / 导出线程 / 进度 / 锁定）
-│   ├── panels.py                   导出页布局（滚动区内的表单 + 固定底部操作栏与日志）
+│   ├── panels.py                   导出页布局（表单卡片直排 + 底部操作栏与日志，无滚动区）
 │   ├── widgets.py                  表单行 / 进度四段 / 操作栏 / 日志区 / 输入对话框
 │   ├── theme.py                    设计令牌（间距、定宽、日志字体）
 │   ├── theme_manager.py            深浅色（跟随系统 / 手动切换，QSettings 持久化）
@@ -264,7 +264,7 @@ python export.py --repo owner/name --full   # 强制全量
 |------|------|
 | `app_gui.py` | 只做启动：补 `sys.path`、自检界面依赖（缺 PyQt6 / qfluentwidgets 时用 `MessageBoxW` 给出可操作提示，而不是 windowed exe 里「窗口一闪而退」）、创建 `QApplication` 并拉起主窗口 |
 | `ui/window.py` | 主窗口与控制器：组合读写、Token 掩码、导出线程、进度、控件锁定、对话框 |
-| `ui/panels.py` | 导出页布局（滚动区里的表单 + 固定底部的操作栏 / 日志 / 状态栏） |
+| `ui/panels.py` | 导出页布局（表单卡片直排 + 底部操作栏 / 日志 / 状态栏，无滚动区） |
 | `ui/widgets.py` | SectionCard（无标题卡片）/ FormRow / ProgressPanel / ActionBar / LogPanel / TextInputDialog |
 | `ui/theme.py`、`ui/theme_manager.py`、`ui/icons.py` | 设计令牌、深浅色主题、窗口图标 |
 | `gui_core.py` | **与界面无关**的组合缓存、`__PROGRESS__` 解析、日志分级/失败摘要、`LogWriter`；界面里**禁止**再写一份 |
@@ -292,7 +292,7 @@ python export.py --repo owner/name --full   # 强制全量
   - Tab 顺序在 `ExportPage._setup_tab_order()` 里**显式**设置：Qt 默认按**控件创建顺序**走焦点链，
     而本页面为排版方便先建表单再建底部操作栏，导致 Tab 会先跳到日志框再跳回按钮。
     顺序按「从上到下、从左到右」，并在末尾用 `setTabOrder(order[-1], order[0])` 闭环 ——
-    不显式闭环时焦点链会接到内部子部件（实测跳到滚动区内容体 `QWidget`），走一圈后焦点丢失。
+    不显式闭环时焦点链会接到内部子部件（实测跳到页面容器 `QWidget`），走一圈后焦点丢失。
   - 焦点链里包含控件内部子部件（如 `PlainTextEdit` 的 `qt_scrollarea_viewport`），
     所以断言/测试只能验「我们关心的控件的相对顺序」，不能断言「下一个就是某某」。
   - 快捷键：`Enter` 触发导出、`Ctrl+Shift+L` 清空日志，都用 `QShortcut` +
@@ -318,11 +318,22 @@ python export.py --repo owner/name --full   # 强制全量
        不定宽就会每来一条 `__PROGRESS__` 把进度条挤走。
     2. **列间距统一走 `theme.GAP`**（`ActionBar` / `ProgressPanel` 都用它）；stretch 只给
        `ProgressPanel` 与说明列，别给中间空白列。
-  - **排版取向：紧凑、首屏可见**。分组用无标题卡片 `SectionCard`（`HeaderCardWidget` 那 48px
-    标题栏会把内容大半推进滚动区），分组名走表单左侧的标签列；表单仍必须放在
-    `SingleDirectionScrollArea` 里，但那是小窗口 / 高 DPI 放大的兜底。实测整张表单 **448px**：
-    940×800 及以上窗口不滚动即可看全，940×760 需滚动 40px、940×700 需 100px。
-    操作栏与日志区放在滚动区**之外**固定：日志区高度限制在 130–300px。
+  - **排版取向：紧凑、首屏可见、不滚动**。分组用无标题卡片 `SectionCard`（`HeaderCardWidget`
+    那 48px 标题栏会白吃一块高度），分组名走表单左侧的标签列。
+  - **表单不再套滚动区**：`ExportPage.vBoxLayout` 直接排 [标题行 / 四张卡片 / 操作栏 / 日志 / 状态栏]，
+    `SectionCard.bodyLayout` 与 `ExportPage.vBoxLayout` 都开 `QLayout.SizeConstraint.SetMinimumSize`，
+    于是页面的 `minimumSizeHint()` = 「内容真正的最小尺寸」，`MainWindow` 用它 + `WINDOW_MIN_WIDTH`
+    设最小尺寸（`window.py` **不写死**高度）。这就是「卡片压不扁」的机制：窗口拖到最小尺寸后
+    拖不动了，而不是把卡片挤成一条缝。
+  - 实测（`QT_QPA_PLATFORM=offscreen` 下 `minimumSizeHint()`）：页面 930×680，标题栏 32，
+    **窗口最小尺寸 931×713**（此前写死 880×620；620 那 93px 正是卡片会被压扁的区间）。
+    各卡片最小高度：标题行 30 / 组合 71 / 导出参数 169 / 数量上限 77 / 选项 46 / 操作栏 27 /
+    日志卡 154（用户拉高时最多长到 324）/ 状态栏 14，加上 `PAGE_MARGIN`、7 个 10px 间距与标题栏。
+  - 日志卡的取舍：它是唯一「越大越有用」的区域，故 `addWidget(card, 1)` 吃剩余高度；但卡片本身
+    `setMaximumHeight(LOG_MAX_HEIGHT + 上下内边距)` 封顶，最大化到 4K 时不会变成一张大半空白的卡片。
+  - 极小屏（逻辑高度装不下 713，如 1080p@150% = 720 逻辑高）靠 `ExportPage.setCompact(True)`
+    收紧 `CARD_PADDING` / `CARD_SPACING` / `ROW_SPACING` 与日志下限（`COMPACT_*` 令牌），
+    **不动字号与控件定宽** —— 那两样一改就会换行、反而更高。
 - 参数以**组合（profile）**为单位持久化到 exe 同目录 `gh_token_cache.json`：一个组合 = 仓库 + 输出目录 + Token + 数量上限 + 各选项开关；UI 下拉整体切换（`_apply_profile` 组合→控件），点「保存」/导出成功后写回（`_capture_profile` 控件→组合）。Token 为单行输入框，默认掩码显示，「显示明文」切换明文；真值存于 `_token_plain`，`_resolve_token` 负责把掩码还原成真值。
   - 缓存结构 v2：`{"version":2, "profiles":[{name, repo, out, token, max_*, skip_details, include_contents, force, incremental, last_used}], "active": "<组合名>"}`，最多 20 个组合。
   - `load_cache()` 兼容 v1（`{"tokens":[...], "last_repo", "last_out"}`），检测到旧结构时调用 `gui_core.migrate_v1` 转成组合并立即写回，旧数据不删除。
