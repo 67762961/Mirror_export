@@ -54,6 +54,7 @@ from gui_core import (
 from . import theme_manager
 from .icons import app_icon
 from .panels import ExportPage
+from .theme import DESIGN_SIZE, WINDOW_MIN_WIDTH
 from .widgets import TextInputDialog
 
 ROOT = app_root()
@@ -71,8 +72,7 @@ class MainWindow(FluentWindowBase):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Mirror_export")
-        self.resize(940, 860)
-        self.setMinimumSize(880, 620)
+        self.resize(*DESIGN_SIZE)
         self.setWindowIcon(app_icon())
 
         self._profile_names: dict[str, str] = {}
@@ -91,6 +91,14 @@ class MainWindow(FluentWindowBase):
         self.stackedWidget.addWidget(self.page)
         self.stackedWidget.setCurrentWidget(self.page)
         self.hBoxLayout.addWidget(self.stackedWidget, 1)
+
+        # 最小尺寸**由内容推导**，不写死：页面直接排卡片（没有滚动区兜底），
+        # 最小高度就等于「标题栏 + 全部卡片 + 操作栏 + 日志下限 + 状态栏」。
+        # 写死一个比内容小的值 → 窗口能被拖到卡片互相压扁，正是要修的那个毛病。
+        # 宽度取 max：Fluent 标题栏的最小/关闭按钮是定宽的，比内容还窄时会截掉按钮。
+        # 必须放在 page 加进 stackedWidget 之后，此前 minimumSizeHint() 还是空的。
+        hint = self.minimumSizeHint()
+        self.setMinimumSize(max(WINDOW_MIN_WIDTH, hint.width()), hint.height())
 
         # 导出期间需要一并锁定的「导出参数」控件（新增可编辑控件必须登记到这里）
         self.param_widgets = [

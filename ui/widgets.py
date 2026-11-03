@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPen, QTextCharFormat, QTextCursor
-from PyQt6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QHBoxLayout, QLayout, QVBoxLayout, QWidget
 from qfluentwidgets import (
     Action,
     BodyLabel,
@@ -108,6 +108,9 @@ class SectionCard(SimpleCardWidget):
         self.bodyLayout = QVBoxLayout(self)
         self.bodyLayout.setContentsMargins(*CARD_PADDING)
         self.bodyLayout.setSpacing(ROW_SPACING)
+        # 卡片最小尺寸 = 内容最小尺寸。少了这一条，卡片会被父布局压到比内容还矮，
+        # 里面的行叠在一起（「拖小窗口把控件压得看不见」的直接来源）。
+        self.bodyLayout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
 
 
 class FormRow(QWidget):
