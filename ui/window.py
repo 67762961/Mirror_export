@@ -99,6 +99,7 @@ class MainWindow(FluentWindowBase):
         # 必须放在 page 加进 stackedWidget 之后，此前 minimumSizeHint() 还是空的。
         hint = self.minimumSizeHint()
         self.setMinimumSize(max(WINDOW_MIN_WIDTH, hint.width()), hint.height())
+        self._fit_to_screen()
 
         # 导出期间需要一并锁定的「导出参数」控件（新增可编辑控件必须登记到这里）
         self.param_widgets = [
@@ -142,6 +143,29 @@ class MainWindow(FluentWindowBase):
             qconfig.themeChangedFinished.connect(self._on_theme_changed)
         except Exception:
             pass  # 旧版 qfluentwidgets 没有这个信号时静默跳过，不影响功能
+
+    # ---------- 尺寸 ----------
+    def _fit_to_screen(self) -> None:
+        """按可用屏幕夹取窗口尺寸：小屏 / 高倍率下不超出屏幕，大屏保持设计尺寸。
+
+        `max(min_h, ...)` 这层不能省：**最小尺寸优先于屏幕**。夹取不能把窗口压到内容
+        最小高度以下，否则等于又把卡片压扁，与「去掉滚动区」的目的正好相反。
+        屏幕真装不下时，宁可有几像素出屏（还能靠拖动看），也不要压扁内容。
+        """
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is None:
+            return
+        avail = screen.availableGeometry()
+        min_w, min_h = self.minimumWidth(), self.minimumHeight()
+        want_w = min(max(DESIGN_SIZE[0], min_w), max(min_w, int(avail.width() * 0.92)))
+        want_h = min(max(DESIGN_SIZE[1], min_h), max(min_h, int(avail.height() * 0.92)))
+        self.resize(want_w, want_h)
+        # 居中偏上（1/4 而不是 1/2）：表单是自上而下读的，上方留白多了反而更醒目。
+        # 但窗口比屏幕还大时「居中」会把左边与标题栏推到屏外（拖不回来），
+        # 所以坐标再夹一次到可用区域的左上角 —— 宁可右下出屏，也要让标题栏可点。
+        x = avail.x() + max(0, (avail.width() - want_w) // 2)
+        y = avail.y() + max(0, (avail.height() - want_h) // 4)
+        self.move(x, y)
 
     # ---------- 信号 ----------
     def _wire_signals(self) -> None:
