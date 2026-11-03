@@ -21,13 +21,19 @@ from qfluentwidgets import (
     LineEdit,
     PushButton,
     SingleDirectionScrollArea,
-    SpinBox,
     SubtitleLabel,
     TransparentToolButton,
 )
 
-from .theme import CARD_SPACING, FIELD_SPACING, PAGE_MARGIN
-from .widgets import ActionBar, FocusCheckBox, FormRow, LogPanel, SectionCard
+from .theme import CARD_SPACING, FIELD_SPACING, PAGE_MARGIN, SPIN_WIDTH
+from .widgets import (
+    ActionBar,
+    FocusCheckBox,
+    FormRow,
+    LogPanel,
+    NoWheelSpinBox,
+    SectionCard,
+)
 
 
 class ExportPage(QWidget):
@@ -256,11 +262,12 @@ class ExportPage(QWidget):
 
     # ---------- 小工具 ----------
     @staticmethod
-    def _spin(parent, value: int) -> SpinBox:
-        spin = SpinBox(parent)
+    def _spin(parent, value: int) -> NoWheelSpinBox:
+        # 用 NoWheelSpinBox 而不是 SpinBox：悬停滚滚轮不改数值（避免误触），键盘仍可调
+        spin = NoWheelSpinBox(parent)
         spin.setRange(1, 10000)
         spin.setValue(value)
-        spin.setFixedWidth(116)  # 再窄就会把数字挤掉（实测 104 时显示成 "8("）
+        spin.setFixedWidth(SPIN_WIDTH)
         return spin
 
     @staticmethod

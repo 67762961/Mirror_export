@@ -19,6 +19,7 @@ from qfluentwidgets import (
     PushButton,
     RoundMenu,
     SimpleCardWidget,
+    SpinBox,
     SubtitleLabel,
     isDarkTheme,
 )
@@ -74,6 +75,24 @@ class FocusCheckBox(CheckBox):
     def focusOutEvent(self, e) -> None:
         super().focusOutEvent(e)
         self.update()
+
+
+class NoWheelSpinBox(SpinBox):
+    """滚轮不改数值的数字输入框（避免悬停误触）。
+
+    为什么需要这个类：qfluentwidgets 的 `SpinBox` 没有重写 `wheelEvent`，改值来自
+    `QAbstractSpinBox` 的默认实现 —— 鼠标**悬停**在框上滚滚轮就会增减，连点进去都不
+    用，很容易在滚动页面时误改数量上限。
+
+    为什么只 `ignore()` 不 `accept()`：ignore 是「我不处理，交给父级」。将来若某处真
+    套上了滚动区，滚轮在那里仍然能滚页面；没有滚动区时就是「什么都不发生」，而不是
+    把事件吞掉让上层也收不到。
+
+    键盘不受影响：聚焦后 ↑/↓（以及 PgUp/PgDn）仍可调值，无障碍路径保留。
+    """
+
+    def wheelEvent(self, event) -> None:
+        event.ignore()
 
 
 class SectionCard(SimpleCardWidget):
