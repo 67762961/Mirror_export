@@ -325,15 +325,45 @@ python export.py --repo owner/name --full   # 强制全量
     于是页面的 `minimumSizeHint()` = 「内容真正的最小尺寸」，`MainWindow` 用它 + `WINDOW_MIN_WIDTH`
     设最小尺寸（`window.py` **不写死**高度）。这就是「卡片压不扁」的机制：窗口拖到最小尺寸后
     拖不动了，而不是把卡片挤成一条缝。
-  - 实测（`QT_QPA_PLATFORM=offscreen` 下 `minimumSizeHint()`）：页面 930×680，标题栏 32，
-    **窗口最小尺寸 931×713**（此前写死 880×620；620 那 93px 正是卡片会被压扁的区间）。
-    各卡片最小高度：标题行 30 / 组合 71 / 导出参数 169 / 数量上限 77 / 选项 46 / 操作栏 27 /
-    日志卡 154（用户拉高时最多长到 324）/ 状态栏 14，加上 `PAGE_MARGIN`、7 个 10px 间距与标题栏。
+  - 实测（`QT_QPA_PLATFORM=offscreen` + 注册系统字体后，逐层 `activate()` 再取 `minimumSizeHint()`）：
+    页面 841×703，标题栏 32，**窗口最小尺寸 880×735**（宽度下限 `WINDOW_MIN_WIDTH`=880 比内容宽，
+    因为标题栏左侧图标与右侧三个窗口按钮是定宽的），此前写死 880×620 —— 620 往上到 735 那 115px
+    正是卡片会被压扁的区间。改前整张表单的自然高度是 446px，而窗口最小高度只有 620，比
+    「446 + 操作栏 + 日志最小值 + 状态栏 + 边距」还矮，所以一旦缩到最小、滚动区又在，内容就
+    从底部被截掉一部分（靠滚动才能看见）。
+    各区块最小高度：标题行 30 / 组合 80 / 导出参数 169 / 数量上限 81 / 选项 46 / 操作栏 32 /
+    日志卡 154（用户拉高时最多长到 324）/ 状态栏 19，加上 `PAGE_MARGIN`、7 个 10px 间距与标题栏。
+    注意 offscreen 平台默认没有字体目录、中文会退化成方块，量出来的宽度偏小（曾因此得到
+    「930×712」这个偏窄的数）；数值以注册字体后的这一组为准。
+  - 量最小尺寸必须走 `ExportPage.contentMinimumSize()`，**不能直接读 `window.minimumSizeHint()`**：
+    Qt 的布局尺寸是延迟重算的，改完内边距后父布局拿到的仍是子控件上一轮的
+    `minimumSizeHint`；而窗口那一层还要经过 `QStackedWidget`，它同样有自己的缓存。
+    该方法的做法是自底向上逐层 `invalidate()` + `activate()`，再取页面 hint，加上标题栏高度。
+    踩过的坑：只 invalidate 页面 → 紧凑档高度纹丝不动、切回来也回不去；再 `adjustSize()` →
+    仍是上一档；`processEvents()` 能对，但那要起事件循环，构造函数里不能用。
   - 日志卡的取舍：它是唯一「越大越有用」的区域，故 `addWidget(card, 1)` 吃剩余高度；但卡片本身
     `setMaximumHeight(LOG_MAX_HEIGHT + 上下内边距)` 封顶，最大化到 4K 时不会变成一张大半空白的卡片。
-  - 极小屏（逻辑高度装不下 713，如 1080p@150% = 720 逻辑高）靠 `ExportPage.setCompact(True)`
-    收紧 `CARD_PADDING` / `CARD_SPACING` / `ROW_SPACING` 与日志下限（`COMPACT_*` 令牌），
-    **不动字号与控件定宽** —— 那两样一改就会换行、反而更高。
+  - 极小屏靠 `ExportPage.setCompact(True)` 收紧 `CARD_PADDING` / `CARD_SPACING` / `ROW_SPACING`
+    与日志下限（`COMPACT_*` 令牌），**不动字号与控件定宽** —— 那两样一改就会换行、反而更高。
+    实测最小高度 703 → **605**（省 98px），`setCompact(False)` 能完整回到 703（不会残留半档）。
+    窗口最小高度相应 735 → **637**。
+- **显示缩放（高 DPI）**：
+  - `app_gui.py` 在**构造 `QApplication` 之前**调用
+    `QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.RoundPreferFloor)`。
+    Windows 上非整倍缩放（笔记本常见的 125% / 150%）原来按 PassThrough 渲染，界面等比放大
+    25% / 50%，940×860 的设计尺寸在 1080p 上几乎顶满屏；取整后 125%/150% 归到 100%、
+    175% 归到 200%，200% 的 4K 屏本来就是整倍、不受影响。
+  - **代价**：125%/150% 屏上本应用比系统其它应用小一号。用户明确不要可切换开关，
+    所以这不在界面上暴露；要改只能改代码。
+  - **运行时改不了**：换显示器缩放设置后必须重启，提示语里也没提（无开关可提示）。
+  - 不做：`AA_EnableHighDpiScaling`（Qt6 里已是 no-op，加了只会误导）、`build_exe.py` 里塞
+    DPI manifest（Qt 自带 manifest 已声明 per-monitor v2）、自绘缩放。
+  - 窗口尺寸由 `MainWindow._fit_to_screen()` 按 `screen().availableGeometry()` 夹取：
+    大屏保持 `DESIGN_SIZE`（940×860）不铺满，小屏取可用区域的 92%，
+    且 **最小尺寸优先于屏幕**（`max(min_h, ...)` 外层）—— 屏幕真装不下时宁可略出屏，
+    也不把卡片压扁。可用高度装不下内容最小高度时先切紧凑档再夹取（顺序不能反）。
+    窗口位置水平居中、垂直 1/4 偏上；坐标再夹一次到可用区域左上角，
+    避免窗口比屏幕大时标题栏被推到屏外、拖不回来（实测 offscreen 下窗口能跑到 x=-266）。
 - 参数以**组合（profile）**为单位持久化到 exe 同目录 `gh_token_cache.json`：一个组合 = 仓库 + 输出目录 + Token + 数量上限 + 各选项开关；UI 下拉整体切换（`_apply_profile` 组合→控件），点「保存」/导出成功后写回（`_capture_profile` 控件→组合）。Token 为单行输入框，默认掩码显示，「显示明文」切换明文；真值存于 `_token_plain`，`_resolve_token` 负责把掩码还原成真值。
   - 缓存结构 v2：`{"version":2, "profiles":[{name, repo, out, token, max_*, skip_details, include_contents, force, incremental, last_used}], "active": "<组合名>"}`，最多 20 个组合。
   - `load_cache()` 兼容 v1（`{"tokens":[...], "last_repo", "last_out"}`），检测到旧结构时调用 `gui_core.migrate_v1` 转成组合并立即写回，旧数据不删除。
