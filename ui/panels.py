@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+from PyQt6.QtCore import QSize
 from PyQt6.QtWidgets import QHBoxLayout, QLayout, QVBoxLayout, QWidget
 from qfluentwidgets import (
     BodyLabel,
@@ -31,6 +32,9 @@ from .theme import (
     BTN_MIN_WIDTH,
     CARD_PADDING,
     CARD_SPACING,
+    COMPACT_CARD_PADDING,
+    COMPACT_CARD_SPACING,
+    COMPACT_LOG_MIN_HEIGHT,
     FIELD_MIN_WIDTH,
     FIELD_SPACING,
     LOG_MAX_HEIGHT,
@@ -46,6 +50,32 @@ from .widgets import (
     NoWheelSpinBox,
     SectionCard,
 )
+
+
+def _relayout_bottom_up(root: QWidget) -> None:
+    """自底向上重算 `root` 子树里每个布局的尺寸缓存。
+
+    Qt 的最小尺寸是自下而上传播的，而 `invalidate()` 只是标脏、真正的重算要等
+    下一次事件循环里的 `activate()`。若只调最外层，父布局会拿子控件**旧的**
+    `minimumSizeHint` 去算 —— 于是测出来的永远是改之前的值。这里按树深倒序逐层
+    `invalidate()` + `activate()`，保证轮到父层时子层已经是新值。
+    """
+
+    def depth(widget: QWidget) -> int:
+        n = 0
+        parent = widget.parentWidget()
+        while parent is not None:
+            n += 1
+            parent = parent.parentWidget()
+        return n
+
+    widgets = sorted((root, *root.findChildren(QWidget)), key=depth, reverse=True)
+    for widget in widgets:
+        layout = widget.layout()
+        if layout is not None:
+            layout.invalidate()
+            layout.activate()
+        widget.updateGeometry()
 
 
 class ExportPage(QWidget):
@@ -272,8 +302,41 @@ class ExportPage(QWidget):
         # 给 stretch=1：窗口拉高时余量优先给日志（日志是唯一「越大越有用」的区域），
         # 但卡片自身也封顶 —— 否则最大化到 4K 时会变成一张大半空白的卡片。
         # 超过上限的余量落到页面底部，视觉上就是状态栏上方多一条留白。
-        card.setMaximumHeight(LOG_MAX_HEIGHT + CARD_PADDING[1] + CARD_PADDING[3])
+        self._log_card_extra = CARD_PADDING[1] + CARD_PADDING[3]
+        card.setMaximumHeight(LOG_MAX_HEIGHT + self._log_card_extra)
         self.vBoxLayout.addWidget(card, 1)
+
+    # ---------- 最小尺寸 ----------
+    def contentMinimumSize(self) -> QSize:
+        """返回「内容真正的最小尺寸」，供 `ui.window` 推导窗口最小尺寸。
+
+        为什么要这一层：Qt 的布局尺寸是**延迟**重算的 —— 改完内边距 / 行距后，父布局
+        拿到的仍是子控件上一轮的 `minimumSizeHint`。只 `invalidate()` 页面布局得到的
+        还是旧值（实测切紧凑档高度纹丝不动、切回来也回不去）。可靠的做法是自己从叶子
+        往上 `invalidate()` + `activate()` 一遍，让每层都用新的子尺寸重算。
+        """
+        _relayout_bottom_up(self)
+        return self.minimumSizeHint()
+
+    def setCompact(self, compact: bool) -> None:
+        """切紧凑密度：极小屏（逻辑高度装不下最小尺寸）上省出几十像素。
+
+        只收紧内边距与行距，**不动字号与控件定宽** —— 那两样一改就会换行、反而
+        更高，而且输入框里的长路径会被重新截断。
+        """
+        self.vBoxLayout.setSpacing(COMPACT_CARD_SPACING if compact else CARD_SPACING)
+        self.log.text.setMinimumHeight(
+            COMPACT_LOG_MIN_HEIGHT if compact else LOG_MIN_HEIGHT
+        )
+        for card in self.findChildren(SectionCard):
+            card.setCompact(compact)
+        # 日志卡的封顶也要跟着内边距走，否则紧凑档下会白白多留一条空白
+        self._log_card_extra = (
+            COMPACT_CARD_PADDING[1] + COMPACT_CARD_PADDING[3]
+            if compact
+            else CARD_PADDING[1] + CARD_PADDING[3]
+        )
+        self.log_card.setMaximumHeight(LOG_MAX_HEIGHT + self._log_card_extra)
 
     # ---------- 小工具 ----------
     @staticmethod

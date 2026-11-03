@@ -30,6 +30,8 @@ from .theme import (
     BAR_HEIGHT,
     BAR_WIDTH,
     CARD_PADDING,
+    COMPACT_CARD_PADDING,
+    COMPACT_ROW_SPACING,
     COUNT_WIDTH,
     FIELD_SPACING,
     FOCUS_RING_COLOR,
@@ -111,6 +113,19 @@ class SectionCard(SimpleCardWidget):
         # 卡片最小尺寸 = 内容最小尺寸。少了这一条，卡片会被父布局压到比内容还矮，
         # 里面的行叠在一起（「拖小窗口把控件压得看不见」的直接来源）。
         self.bodyLayout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
+
+    def setCompact(self, compact: bool) -> None:
+        """切紧凑密度：只收紧内边距与行距，为极小屏挤出几十像素。
+
+        **不动字号与控件定宽** —— 那两样一改就会换行、反而更高，而且输入框里的
+        长路径会被重新截断（见 `ui/theme.py` 的说明）。
+        """
+        self.bodyLayout.setContentsMargins(
+            *(COMPACT_CARD_PADDING if compact else CARD_PADDING)
+        )
+        self.bodyLayout.setSpacing(
+            COMPACT_ROW_SPACING if compact else ROW_SPACING
+        )
 
 
 class FormRow(QWidget):
