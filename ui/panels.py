@@ -1,18 +1,22 @@
 """导出页：只负责布局与控件暴露，业务逻辑全部在 ui.window 的控制器里。
 
 页面结构（单页表单，信息架构与 Tk 版一一对应）：
-    滚动区[ 标题行 / 组合 / 导出参数 / 数量上限 / 选项 ] + 固定底部[ 操作栏 / 日志 / 状态栏 ]
+    直排[ 标题行 / 组合 / 导出参数 / 数量上限 / 选项 / 操作栏 / 日志 / 状态栏 ]
 
-排版取向：**紧凑**。每个分组用无标题卡片（`SectionCard`）而不是带 48px 标题栏的
-`HeaderCardWidget`，分组名走表单左侧的标签列；间距也压到最小。这样即使 800px 高的
-窗口也能一屏看到全部导出参数，不必靠滚轮翻。滚动区仍然保留 —— 小窗口 / 高 DPI 放大时
-它才是兜底，而不是主要浏览方式。
+排版取向：**紧凑、不滚动**。每个分组用无标题卡片（`SectionCard`）而不是带 48px 标题栏
+的 `HeaderCardWidget`，分组名走表单左侧的标签列；间距也压到最小。
+
+为什么不套滚动区：卡片按自然高度从上往下排，页面布局开 `SetMinimumSize` 之后，窗口的
+最小高度由内容自己推导 —— 于是「把窗口拖小到卡片被压扁」在物理上就不可能发生（拖到
+最小尺寸就拖不动了）。反过来，只要有滚动区兜底，窗口就能被拖到远小于内容的尺寸，卡片
+被压成一条缝，用户还得靠滚轮才发现下面还有东西。
+代价是最小高度变高（实测 620 → 735）：极小屏靠 `setCompact` 收紧到 637。
 """
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
+from PyQt6.QtCore import QSize
+from PyQt6.QtWidgets import QHBoxLayout, QLayout, QVBoxLayout, QWidget
 from qfluentwidgets import (
     BodyLabel,
     CaptionLabel,
@@ -20,14 +24,58 @@ from qfluentwidgets import (
     FluentIcon,
     LineEdit,
     PushButton,
-    SingleDirectionScrollArea,
-    SpinBox,
     SubtitleLabel,
     TransparentToolButton,
 )
 
-from .theme import CARD_SPACING, FIELD_SPACING, PAGE_MARGIN
-from .widgets import ActionBar, FocusCheckBox, FormRow, LogPanel, SectionCard
+from .theme import (
+    BTN_MIN_WIDTH,
+    CARD_PADDING,
+    CARD_SPACING,
+    COMPACT_CARD_PADDING,
+    COMPACT_CARD_SPACING,
+    COMPACT_LOG_MIN_HEIGHT,
+    FIELD_MIN_WIDTH,
+    FIELD_SPACING,
+    LOG_MAX_HEIGHT,
+    LOG_MIN_HEIGHT,
+    PAGE_MARGIN,
+    SPIN_WIDTH,
+)
+from .widgets import (
+    ActionBar,
+    FocusCheckBox,
+    FormRow,
+    LogPanel,
+    NoWheelSpinBox,
+    SectionCard,
+)
+
+
+def _relayout_bottom_up(root: QWidget) -> None:
+    """自底向上重算 `root` 子树里每个布局的尺寸缓存。
+
+    Qt 的最小尺寸是自下而上传播的，而 `invalidate()` 只是标脏、真正的重算要等
+    下一次事件循环里的 `activate()`。若只调最外层，父布局会拿子控件**旧的**
+    `minimumSizeHint` 去算 —— 于是测出来的永远是改之前的值。这里按树深倒序逐层
+    `invalidate()` + `activate()`，保证轮到父层时子层已经是新值。
+    """
+
+    def depth(widget: QWidget) -> int:
+        n = 0
+        parent = widget.parentWidget()
+        while parent is not None:
+            n += 1
+            parent = parent.parentWidget()
+        return n
+
+    widgets = sorted((root, *root.findChildren(QWidget)), key=depth, reverse=True)
+    for widget in widgets:
+        layout = widget.layout()
+        if layout is not None:
+            layout.invalidate()
+            layout.activate()
+        widget.updateGeometry()
 
 
 class ExportPage(QWidget):
@@ -38,30 +86,22 @@ class ExportPage(QWidget):
         self.vBoxLayout = QVBoxLayout(self)
         self.vBoxLayout.setContentsMargins(*PAGE_MARGIN)
         self.vBoxLayout.setSpacing(CARD_SPACING)
+        # 最小尺寸 = 内容最小尺寸：它会一路传到 MainWindow.minimumSizeHint()，
+        # 窗口因此拖不到「压扁卡片」的尺寸。**这是整个布局的不变量**，删掉就退回
+        # 「能拖多小拖多小、卡片挤成一条缝」。
+        self.vBoxLayout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
 
-        # 表单区：空间足够时全部可见，不够时才滚动（而不是把卡片压扁）
-        self.scroll = SingleDirectionScrollArea(orient=Qt.Orientation.Vertical)
-        self.scroll.setWidgetResizable(True)
-        body = QWidget()
-        self.formLayout = QVBoxLayout(body)
-        self.formLayout.setContentsMargins(0, 0, 8, 0)  # 右侧给滚动条留空
-        self.formLayout.setSpacing(CARD_SPACING)
-        self.scroll.setWidget(body)
-        # 透明必须**在 setWidget 之后**做：qfluentwidgets 的实现只会给「当前已有」的内容
-        # 部件上透明样式。先调后 setWidget 的话内容体与视口都留着浅色底，
-        # 切到深色主题时滚动区里会是一大块白底 + 白字（实测就是这个 bug）。
-        self.scroll.enableTransparentBackground()
-        self.scroll.viewport().setAutoFillBackground(False)
-        self.vBoxLayout.addWidget(self.scroll, 1)
+        # 表单区直接排进页面布局：不再套滚动区，右侧也就不必给滚动条留 8px。
+        for build in (
+            self._build_header,
+            self._build_profile_card,
+            self._build_params_card,
+            self._build_limits_card,
+            self._build_options_card,
+        ):
+            build(self)
 
-        self._build_header(body)
-        self._build_profile_card(body)
-        self._build_params_card(body)
-        self._build_limits_card(body)
-        self._build_options_card(body)
-        self.formLayout.addStretch(1)
-
-        # 底部固定：操作栏（按钮 + 进度四段）/ 日志 / 状态栏
+        # 底部：操作栏（按钮 + 进度四段）/ 日志 / 状态栏
         self.action = ActionBar(self)
         self.run_btn = self.action.run_btn
         self.open_btn = self.action.open_btn
@@ -111,7 +151,7 @@ class ExportPage(QWidget):
         for first, second in zip(order, order[1:]):
             QWidget.setTabOrder(first, second)
         # 收尾：最后一个（日志框）回到第一个，形成闭环。不显式设的话 Qt 会按创建顺序
-        # 接到别的控件上（实测会跳到滚动区的内容体 QWidget），Tab 走一圈后焦点就丢了。
+        # 接到别的控件上（实测会跳到页面容器 QWidget），Tab 走一圈后焦点就丢了。
         QWidget.setTabOrder(order[-1], order[0])
 
     # ---------- 各区块 ----------
@@ -133,7 +173,7 @@ class ExportPage(QWidget):
         self.theme_btn.setFixedSize(30, 30)
         layout.addWidget(self.theme_btn)
 
-        self.formLayout.addWidget(row)
+        self.vBoxLayout.addWidget(row)
 
     def _build_profile_card(self, parent) -> None:
         card = SectionCard(parent)
@@ -149,6 +189,8 @@ class ExportPage(QWidget):
             PushButton("重命名", card),
             PushButton("删除", card),
         ]
+        for button in self.profile_btns:
+            button.setMinimumWidth(BTN_MIN_WIDTH)
 
         row = FormRow("组合", card)
         row.add(self.profile_combo, 1)
@@ -162,20 +204,23 @@ class ExportPage(QWidget):
             )
         )
 
-        self.formLayout.addWidget(card)
+        self.vBoxLayout.addWidget(card)
 
     def _build_params_card(self, parent) -> None:
         card = SectionCard(parent)
 
         self.repo_edit = LineEdit(card)
         self.repo_edit.setPlaceholderText("owner/repo")
+        self.repo_edit.setMinimumWidth(FIELD_MIN_WIDTH)
         repo_row = FormRow("仓库", card)
         repo_row.add(self.repo_edit, 1)
         card.bodyLayout.addWidget(repo_row)
 
         out_row = FormRow("输出目录", card)
         self.out_edit = LineEdit(card)
+        self.out_edit.setMinimumWidth(FIELD_MIN_WIDTH)
         self.browse_btn = PushButton("浏览…", card)
+        self.browse_btn.setMinimumWidth(BTN_MIN_WIDTH)
         out_row.add(self.out_edit, 1)
         out_row.add(self.browse_btn)
         card.bodyLayout.addWidget(out_row)
@@ -183,7 +228,9 @@ class ExportPage(QWidget):
         token_row = FormRow("Token", card)
         self.token_edit = LineEdit(card)
         self.token_edit.setPlaceholderText("ghp_…（只在本机使用，不写入导出包）")
+        self.token_edit.setMinimumWidth(FIELD_MIN_WIDTH)
         self.clear_btn = PushButton("清除缓存", card)
+        self.clear_btn.setMinimumWidth(BTN_MIN_WIDTH)
         token_row.add(self.token_edit, 1)
         token_row.add(self.clear_btn)
         card.bodyLayout.addWidget(token_row)
@@ -196,7 +243,7 @@ class ExportPage(QWidget):
         extra.add(self.remember_check)
         card.bodyLayout.addWidget(extra)
 
-        self.formLayout.addWidget(card)
+        self.vBoxLayout.addWidget(card)
 
     def _build_limits_card(self, parent) -> None:
         card = SectionCard(parent)
@@ -219,7 +266,7 @@ class ExportPage(QWidget):
             )
         )
 
-        self.formLayout.addWidget(card)
+        self.vBoxLayout.addWidget(card)
 
     def _build_options_card(self, parent) -> None:
         card = SectionCard(parent)
@@ -243,24 +290,62 @@ class ExportPage(QWidget):
             row.add(widget)
         card.bodyLayout.addWidget(row)
 
-        self.formLayout.addWidget(card)
+        self.vBoxLayout.addWidget(card)
 
     def _build_log(self) -> None:
         card = SectionCard(self)
         self.log = LogPanel(card)
-        self.log.text.setMinimumHeight(130)
-        self.log.text.setMaximumHeight(300)
+        self.log.text.setMinimumHeight(LOG_MIN_HEIGHT)
+        self.log.text.setMaximumHeight(LOG_MAX_HEIGHT)
         card.bodyLayout.addWidget(self.log)
         self.log_card = card
-        self.vBoxLayout.addWidget(card)
+        # 给 stretch=1：窗口拉高时余量优先给日志（日志是唯一「越大越有用」的区域），
+        # 但卡片自身也封顶 —— 否则最大化到 4K 时会变成一张大半空白的卡片。
+        # 超过上限的余量落到页面底部，视觉上就是状态栏上方多一条留白。
+        self._log_card_extra = CARD_PADDING[1] + CARD_PADDING[3]
+        card.setMaximumHeight(LOG_MAX_HEIGHT + self._log_card_extra)
+        self.vBoxLayout.addWidget(card, 1)
+
+    # ---------- 最小尺寸 ----------
+    def contentMinimumSize(self) -> QSize:
+        """返回「内容真正的最小尺寸」，供 `ui.window` 推导窗口最小尺寸。
+
+        为什么要这一层：Qt 的布局尺寸是**延迟**重算的 —— 改完内边距 / 行距后，父布局
+        拿到的仍是子控件上一轮的 `minimumSizeHint`。只 `invalidate()` 页面布局得到的
+        还是旧值（实测切紧凑档高度纹丝不动、切回来也回不去）。可靠的做法是自己从叶子
+        往上 `invalidate()` + `activate()` 一遍，让每层都用新的子尺寸重算。
+        """
+        _relayout_bottom_up(self)
+        return self.minimumSizeHint()
+
+    def setCompact(self, compact: bool) -> None:
+        """切紧凑密度：极小屏（逻辑高度装不下最小尺寸）上省出几十像素。
+
+        只收紧内边距与行距，**不动字号与控件定宽** —— 那两样一改就会换行、反而
+        更高，而且输入框里的长路径会被重新截断。
+        """
+        self.vBoxLayout.setSpacing(COMPACT_CARD_SPACING if compact else CARD_SPACING)
+        self.log.text.setMinimumHeight(
+            COMPACT_LOG_MIN_HEIGHT if compact else LOG_MIN_HEIGHT
+        )
+        for card in self.findChildren(SectionCard):
+            card.setCompact(compact)
+        # 日志卡的封顶也要跟着内边距走，否则紧凑档下会白白多留一条空白
+        self._log_card_extra = (
+            COMPACT_CARD_PADDING[1] + COMPACT_CARD_PADDING[3]
+            if compact
+            else CARD_PADDING[1] + CARD_PADDING[3]
+        )
+        self.log_card.setMaximumHeight(LOG_MAX_HEIGHT + self._log_card_extra)
 
     # ---------- 小工具 ----------
     @staticmethod
-    def _spin(parent, value: int) -> SpinBox:
-        spin = SpinBox(parent)
+    def _spin(parent, value: int) -> NoWheelSpinBox:
+        # 用 NoWheelSpinBox 而不是 SpinBox：悬停滚滚轮不改数值（避免误触），键盘仍可调
+        spin = NoWheelSpinBox(parent)
         spin.setRange(1, 10000)
         spin.setValue(value)
-        spin.setFixedWidth(116)  # 再窄就会把数字挤掉（实测 104 时显示成 "8("）
+        spin.setFixedWidth(SPIN_WIDTH)
         return spin
 
     @staticmethod

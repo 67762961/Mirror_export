@@ -17,6 +17,29 @@ ROW_SPACING = 8                  # 卡片内各行之间
 LABEL_WIDTH = 72                 # 表单左侧标签列宽（各行对齐）
 FIELD_SPACING = 8                # 同一行内控件之间
 
+# 控件最小尺寸：窗口被拖到最小时的下限（高度不用管，Fluent 控件都是定高 33）
+FIELD_MIN_WIDTH = 240            # 单行输入框（owner/repo 这类长路径要能看到开头）
+SPIN_WIDTH = 134                 # 数量上限输入框：上下按钮各 31px + 边距之后，文本框剩 42px，
+                                 # 刚好放下 5 位数 "10000"（需 40px）；116 时只剩 24px，会把
+                                 # 10000 裁成 "100C"。不直接取 sizeHint(138) 是为了让「数量上限」
+                                 # 那一行的最小宽度留在 880 窗口下限之内。
+BTN_MIN_WIDTH = 76               # 组合管理那排按钮
+
+# 日志区高度（原来是写在 panels.py 里的字面量，统一收到令牌）
+LOG_MIN_HEIGHT = 130
+LOG_MAX_HEIGHT = 300
+
+# 窗口尺寸：大屏保持设计尺寸不铺满，小屏按可用区域夹取（见 window._fit_to_screen）
+DESIGN_SIZE = (940, 860)
+WINDOW_MIN_WIDTH = 880           # 最小宽度的下限：标题栏左侧图标 + 右侧三个窗口按钮是定宽的
+
+# 紧凑档：可用高度连最小高度都装不下时（1080p@150% / 1366×768）改用它。
+# 只收紧内边距与行距，不动字号与定宽 —— 那两样一改就会换行、反而更高。
+COMPACT_CARD_PADDING = (16, 8, 16, 8)
+COMPACT_CARD_SPACING = 6
+COMPACT_ROW_SPACING = 6
+COMPACT_LOG_MIN_HEIGHT = 110
+
 # 进度区（沿用 Tk 版教训：进度条与计数列必须定宽，否则说明文本会把它们挤走）
 GAP = 10
 BAR_WIDTH = 200

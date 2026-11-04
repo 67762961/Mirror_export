@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPen, QTextCharFormat, QTextCursor
-from PyQt6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QHBoxLayout, QLayout, QSizePolicy, QVBoxLayout, QWidget
 from qfluentwidgets import (
     Action,
     BodyLabel,
@@ -19,6 +19,7 @@ from qfluentwidgets import (
     PushButton,
     RoundMenu,
     SimpleCardWidget,
+    SpinBox,
     SubtitleLabel,
     isDarkTheme,
 )
@@ -29,6 +30,8 @@ from .theme import (
     BAR_HEIGHT,
     BAR_WIDTH,
     CARD_PADDING,
+    COMPACT_CARD_PADDING,
+    COMPACT_ROW_SPACING,
     COUNT_WIDTH,
     FIELD_SPACING,
     FOCUS_RING_COLOR,
@@ -76,6 +79,24 @@ class FocusCheckBox(CheckBox):
         self.update()
 
 
+class NoWheelSpinBox(SpinBox):
+    """滚轮不改数值的数字输入框（避免悬停误触）。
+
+    为什么需要这个类：qfluentwidgets 的 `SpinBox` 没有重写 `wheelEvent`，改值来自
+    `QAbstractSpinBox` 的默认实现 —— 鼠标**悬停**在框上滚滚轮就会增减，连点进去都不
+    用，很容易在滚动页面时误改数量上限。
+
+    为什么只 `ignore()` 不 `accept()`：ignore 是「我不处理，交给父级」。将来若某处真
+    套上了滚动区，滚轮在那里仍然能滚页面；没有滚动区时就是「什么都不发生」，而不是
+    把事件吞掉让上层也收不到。
+
+    键盘不受影响：聚焦后 ↑/↓（以及 PgUp/PgDn）仍可调值，无障碍路径保留。
+    """
+
+    def wheelEvent(self, event) -> None:
+        event.ignore()
+
+
 class SectionCard(SimpleCardWidget):
     """无标题卡片：省掉 `HeaderCardWidget` 那 48px 标题栏。
 
@@ -89,6 +110,22 @@ class SectionCard(SimpleCardWidget):
         self.bodyLayout = QVBoxLayout(self)
         self.bodyLayout.setContentsMargins(*CARD_PADDING)
         self.bodyLayout.setSpacing(ROW_SPACING)
+        # 卡片最小尺寸 = 内容最小尺寸。少了这一条，卡片会被父布局压到比内容还矮，
+        # 里面的行叠在一起（「拖小窗口把控件压得看不见」的直接来源）。
+        self.bodyLayout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
+
+    def setCompact(self, compact: bool) -> None:
+        """切紧凑密度：只收紧内边距与行距，为极小屏挤出几十像素。
+
+        **不动字号与控件定宽** —— 那两样一改就会换行、反而更高，而且输入框里的
+        长路径会被重新截断（见 `ui/theme.py` 的说明）。
+        """
+        self.bodyLayout.setContentsMargins(
+            *(COMPACT_CARD_PADDING if compact else CARD_PADDING)
+        )
+        self.bodyLayout.setSpacing(
+            COMPACT_ROW_SPACING if compact else ROW_SPACING
+        )
 
 
 class FormRow(QWidget):
@@ -118,6 +155,44 @@ class FormRow(QWidget):
         return self
 
 
+class ElidedBodyLabel(BodyLabel):
+    """不换行、超宽时画省略号的说明标签（专给进度行的说明列用）。
+
+    为什么不能用普通 `BodyLabel`：它既不换行也不省略，给多宽就画多宽，**超出的部分
+    直接被裁掉**；更糟的是它把「整段文字要多宽」也算进最小宽度 —— 导出时贴一条长
+    任务说明，页面最小宽度会从 841 涨到 1261（实测），窗口比这窄时右侧一截（含所有
+    按钮）会被窗口直接切掉。
+
+    所以这里两件事一起做：
+    1. `QSizePolicy(Ignored, Preferred)`：能伸展，但**不参与最小宽度**，长文本撑不大页面；
+    2. 绘制时用 `elidedText` 补省略号，完整文本进 tooltip —— 至少看得出「还有更多」。
+
+    为什么把 `setSizePolicy` 放在 `setText` 里：qfluentwidgets 的 `FluentLabelBase.__init__`
+    是 `singledispatchmethod`，子类**不能重写 `__init__`**（会 `TypeError`），而父类构造期
+    就会调一次 `setText`，正好赶上第一次设策略。
+    """
+
+    def setText(self, text: str) -> None:  # noqa: N802 - 重写 Qt 方法名
+        self._full_text = text or ""
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.setToolTip(self._full_text)
+        super().setText(self._elided())
+
+    def resizeEvent(self, e) -> None:
+        super().resizeEvent(e)
+        # 宽度一变省略位置就变；这里直接调父类 setText，避免回灌进自己的 setText 再算一遍
+        BodyLabel.setText(self, self._elided())
+
+    def _elided(self) -> str:
+        text = getattr(self, "_full_text", "")
+        if not text:
+            return ""
+        # 留 2px 余量，免得刚好卡在边界上时省略号压住最后一个字
+        return self.fontMetrics().elidedText(
+            text, Qt.TextElideMode.ElideRight, max(0, self.width() - 2)
+        )
+
+
 class ProgressPanel(QWidget):
     """进度四段：进度条 | 百分比 | 已完成阶段/总阶段 | 阶段内计数 | 说明文本。
 
@@ -144,7 +219,7 @@ class ProgressPanel(QWidget):
         self.stages.setFixedWidth(STAGES_WIDTH)
         self.count = BodyLabel("0/0", self)
         self.count.setFixedWidth(COUNT_WIDTH)
-        self.detail = BodyLabel("", self)
+        self.detail = ElidedBodyLabel("", self)
 
         for widget in (self.bar, self.pct, self.stages, self.count, self.detail):
             self.hBoxLayout.addWidget(widget)

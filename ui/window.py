@@ -22,7 +22,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import QSize, Qt, QTimer
 from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import QApplication, QFileDialog
 from qfluentwidgets import (
@@ -54,6 +54,7 @@ from gui_core import (
 from . import theme_manager
 from .icons import app_icon
 from .panels import ExportPage
+from .theme import DESIGN_SIZE, WINDOW_MIN_WIDTH
 from .widgets import TextInputDialog
 
 ROOT = app_root()
@@ -71,8 +72,7 @@ class MainWindow(FluentWindowBase):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Mirror_export")
-        self.resize(940, 860)
-        self.setMinimumSize(880, 620)
+        self.resize(*DESIGN_SIZE)
         self.setWindowIcon(app_icon())
 
         self._profile_names: dict[str, str] = {}
@@ -91,6 +91,13 @@ class MainWindow(FluentWindowBase):
         self.stackedWidget.addWidget(self.page)
         self.stackedWidget.setCurrentWidget(self.page)
         self.hBoxLayout.addWidget(self.stackedWidget, 1)
+
+        # 最小尺寸**由内容推导**，不写死：页面直接排卡片（没有滚动区兜底），
+        # 最小高度就等于「标题栏 + 全部卡片 + 操作栏 + 日志下限 + 状态栏」。
+        # 写死一个比内容小的值 → 窗口能被拖到卡片互相压扁，正是要修的那个毛病。
+        # 必须放在 page 加进 stackedWidget 之后，此前 minimumSizeHint() 还是空的。
+        self._adopt_content_min_size()
+        self._fit_to_screen()
 
         # 导出期间需要一并锁定的「导出参数」控件（新增可编辑控件必须登记到这里）
         self.param_widgets = [
@@ -134,6 +141,61 @@ class MainWindow(FluentWindowBase):
             qconfig.themeChangedFinished.connect(self._on_theme_changed)
         except Exception:
             pass  # 旧版 qfluentwidgets 没有这个信号时静默跳过，不影响功能
+
+    # ---------- 尺寸 ----------
+    def _content_min_size(self) -> QSize:
+        """内容真正需要的最小尺寸（含标题栏高度）。
+
+        **量的是页面，不是窗口**：窗口那一层要经过 `QStackedWidget`，它的
+        minimumSizeHint 有自己的缓存，改完内边距只 invalidate 页面时量到的还是旧值
+        （实测紧凑档纹丝不动、恢复档也回不去）。页面高度 + 标题栏高度就是需求，
+        `hBoxLayout` 的上边距正是标题栏高度。
+        """
+        page_hint = self.page.contentMinimumSize()
+        return QSize(
+            max(WINDOW_MIN_WIDTH, page_hint.width()),
+            page_hint.height() + self.titleBar.height(),
+        )
+
+    def _adopt_content_min_size(self) -> None:
+        """把「内容真正的最小尺寸」装进窗口最小尺寸。
+
+        高度直接取内容、不多留一个像素 —— 多留就又留出「把卡片压扁」的空间。
+        宽度取 `max(WINDOW_MIN_WIDTH, ...)`：Fluent 标题栏的最小化/关闭按钮是定宽的，
+        比内容还窄时会被截掉。紧凑档切换后必须重调一次，因为内容尺寸变了。
+        """
+        size = self._content_min_size()
+        self.setMinimumSize(size.width(), size.height())
+
+    def _fit_to_screen(self) -> None:
+        """按可用屏幕夹取窗口尺寸：小屏 / 高倍率下不超出屏幕，大屏保持设计尺寸。
+
+        `max(min_h, ...)` 这层不能省：**最小尺寸优先于屏幕**。夹取不能把窗口压到内容
+        最小高度以下，否则等于又把卡片压扁，与「去掉滚动区」的目的正好相反。
+        屏幕真装不下时，宁可有几像素出屏（还能靠拖动看），也不要压扁内容。
+        """
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is None:
+            return
+        avail = screen.availableGeometry()
+
+        # 紧凑档判决：可用高度装不下内容最小高度时（典型 1366×768、1080p@150%），
+        # 先收紧密度再夹取 —— 顺序不能反，否则夹取用的还是紧凑前的尺寸，
+        # 而最小尺寸又压在紧凑后的内容上，两边会打架。
+        if avail.height() < self._content_min_size().height():
+            self.page.setCompact(True)
+        self._adopt_content_min_size()
+
+        min_w, min_h = self.minimumWidth(), self.minimumHeight()
+        want_w = min(max(DESIGN_SIZE[0], min_w), max(min_w, int(avail.width() * 0.92)))
+        want_h = min(max(DESIGN_SIZE[1], min_h), max(min_h, int(avail.height() * 0.92)))
+        self.resize(want_w, want_h)
+        # 居中偏上（1/4 而不是 1/2）：表单是自上而下读的，上方留白多了反而更醒目。
+        # 但窗口比屏幕还大时「居中」会把左边与标题栏推到屏外（拖不回来），
+        # 所以坐标再夹一次到可用区域的左上角 —— 宁可右下出屏，也要让标题栏可点。
+        x = avail.x() + max(0, (avail.width() - want_w) // 2)
+        y = avail.y() + max(0, (avail.height() - want_h) // 4)
+        self.move(x, y)
 
     # ---------- 信号 ----------
     def _wire_signals(self) -> None:

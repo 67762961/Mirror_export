@@ -50,7 +50,7 @@ Mirror_export/
 ├── gui_core.py                     与界面无关的公共逻辑（组合缓存 / 进度解析 / 日志队列）
 ├── ui/                             Fluent 界面层（PyQt6 + PyQt6-Fluent-Widgets）
 │   ├── window.py                   主窗口与控制器（组合 / Token / 导出线程 / 进度 / 锁定）
-│   ├── panels.py                   导出页布局（滚动区内的表单 + 固定底部操作栏与日志）
+│   ├── panels.py                   导出页布局（表单卡片直排 + 底部操作栏与日志，无滚动区）
 │   ├── widgets.py                  表单行 / 进度四段 / 操作栏 / 日志区 / 输入对话框
 │   ├── theme.py                    设计令牌（间距、定宽、日志字体）
 │   ├── theme_manager.py            深浅色（跟随系统 / 手动切换，QSettings 持久化）
@@ -264,7 +264,7 @@ python export.py --repo owner/name --full   # 强制全量
 |------|------|
 | `app_gui.py` | 只做启动：补 `sys.path`、自检界面依赖（缺 PyQt6 / qfluentwidgets 时用 `MessageBoxW` 给出可操作提示，而不是 windowed exe 里「窗口一闪而退」）、创建 `QApplication` 并拉起主窗口 |
 | `ui/window.py` | 主窗口与控制器：组合读写、Token 掩码、导出线程、进度、控件锁定、对话框 |
-| `ui/panels.py` | 导出页布局（滚动区里的表单 + 固定底部的操作栏 / 日志 / 状态栏） |
+| `ui/panels.py` | 导出页布局（表单卡片直排 + 底部操作栏 / 日志 / 状态栏，无滚动区） |
 | `ui/widgets.py` | SectionCard（无标题卡片）/ FormRow / ProgressPanel / ActionBar / LogPanel / TextInputDialog |
 | `ui/theme.py`、`ui/theme_manager.py`、`ui/icons.py` | 设计令牌、深浅色主题、窗口图标 |
 | `gui_core.py` | **与界面无关**的组合缓存、`__PROGRESS__` 解析、日志分级/失败摘要、`LogWriter`；界面里**禁止**再写一份 |
@@ -292,7 +292,7 @@ python export.py --repo owner/name --full   # 强制全量
   - Tab 顺序在 `ExportPage._setup_tab_order()` 里**显式**设置：Qt 默认按**控件创建顺序**走焦点链，
     而本页面为排版方便先建表单再建底部操作栏，导致 Tab 会先跳到日志框再跳回按钮。
     顺序按「从上到下、从左到右」，并在末尾用 `setTabOrder(order[-1], order[0])` 闭环 ——
-    不显式闭环时焦点链会接到内部子部件（实测跳到滚动区内容体 `QWidget`），走一圈后焦点丢失。
+    不显式闭环时焦点链会接到内部子部件（实测跳到页面容器 `QWidget`），走一圈后焦点丢失。
   - 焦点链里包含控件内部子部件（如 `PlainTextEdit` 的 `qt_scrollarea_viewport`），
     所以断言/测试只能验「我们关心的控件的相对顺序」，不能断言「下一个就是某某」。
   - 快捷键：`Enter` 触发导出、`Ctrl+Shift+L` 清空日志，都用 `QShortcut` +
@@ -316,13 +316,60 @@ python export.py --repo owner/name --full   # 强制全量
     1. **进度条与三个计数列都定宽**（见 `ui/theme.py` 的 `BAR_WIDTH` / `PCT_WIDTH` /
        `STAGES_WIDTH` / `COUNT_WIDTH`），**只有最后的说明列吃 stretch**。说明文本长短随进度变化，
        不定宽就会每来一条 `__PROGRESS__` 把进度条挤走。
-    2. **列间距统一走 `theme.GAP`**（`ActionBar` / `ProgressPanel` 都用它）；stretch 只给
+    2. **说明列必须能被压缩**：它是 `ElidedBodyLabel`（`QSizePolicy(Ignored, Preferred)` +
+       `elidedText` 省略号 + 全文进 tooltip）。普通 `BodyLabel` 会把「整段说明要多宽」算进最小宽度 ——
+       导出时贴一条长 `Commit diff …`（实测需 549px），页面最小宽度就从 841 涨到 1261，
+       窗口比它窄时右侧一截（含组合管理那排按钮）会被窗口直接切掉。换成 `Ignored` 后长文本
+       不再参与最小宽度，超宽处画省略号，鼠标悬停看全文。
+    3. **列间距统一走 `theme.GAP`**（`ActionBar` / `ProgressPanel` 都用它）；stretch 只给
        `ProgressPanel` 与说明列，别给中间空白列。
-  - **排版取向：紧凑、首屏可见**。分组用无标题卡片 `SectionCard`（`HeaderCardWidget` 那 48px
-    标题栏会把内容大半推进滚动区），分组名走表单左侧的标签列；表单仍必须放在
-    `SingleDirectionScrollArea` 里，但那是小窗口 / 高 DPI 放大的兜底。实测整张表单 **448px**：
-    940×800 及以上窗口不滚动即可看全，940×760 需滚动 40px、940×700 需 100px。
-    操作栏与日志区放在滚动区**之外**固定：日志区高度限制在 130–300px。
+  - **排版取向：紧凑、首屏可见、不滚动**。分组用无标题卡片 `SectionCard`（`HeaderCardWidget`
+    那 48px 标题栏会白吃一块高度），分组名走表单左侧的标签列。
+  - **表单不再套滚动区**：`ExportPage.vBoxLayout` 直接排 [标题行 / 四张卡片 / 操作栏 / 日志 / 状态栏]，
+    `SectionCard.bodyLayout` 与 `ExportPage.vBoxLayout` 都开 `QLayout.SizeConstraint.SetMinimumSize`，
+    于是页面的 `minimumSizeHint()` = 「内容真正的最小尺寸」，`MainWindow` 用它 + `WINDOW_MIN_WIDTH`
+    设最小尺寸（`window.py` **不写死**高度）。这就是「卡片压不扁」的机制：窗口拖到最小尺寸后
+    拖不动了，而不是把卡片挤成一条缝。
+  - 实测（`QT_QPA_PLATFORM=offscreen` + 注册系统字体后，逐层 `activate()` 再取 `minimumSizeHint()`）：
+    页面 913×703，标题栏 32，**窗口最小尺寸 913×735**（此前写死 880×620 —— 620 往上到 735 那
+    115px 正是卡片会被压扁的区间）。改前整张表单的自然高度是 446px，而窗口最小高度只有 620，比
+    「446 + 操作栏 + 日志最小值 + 状态栏 + 边距」还矮，所以一旦缩到最小、滚动区又在，内容就
+    从底部被截掉一部分（靠滚动才能看见）。
+    宽度 913 由「数量上限」那一行决定（4 组「标签 + 数字框」，间距 18），比 `WINDOW_MIN_WIDTH`
+    的下限 880 宽；把数字框收窄到能裁掉 5 位数的宽度就能回到 841，但那属于用不可读换紧凑，不做。
+    各区块最小高度：标题行 30 / 组合 80 / 导出参数 169 / 数量上限 81 / 选项 46 / 操作栏 32 /
+    日志卡 154（用户拉高时最多长到 324）/ 状态栏 19，加上 `PAGE_MARGIN`、7 个 10px 间距与标题栏。
+    注意 offscreen 平台默认没有字体目录、中文会退化成方块，量出来的宽度偏小（曾因此得到
+    「930×712」这个偏窄的数）；数值以注册字体后的这一组为准。
+  - 量最小尺寸必须走 `ExportPage.contentMinimumSize()`，**不能直接读 `window.minimumSizeHint()`**：
+    Qt 的布局尺寸是延迟重算的，改完内边距后父布局拿到的仍是子控件上一轮的
+    `minimumSizeHint`；而窗口那一层还要经过 `QStackedWidget`，它同样有自己的缓存。
+    该方法的做法是自底向上逐层 `invalidate()` + `activate()`，再取页面 hint，加上标题栏高度。
+    踩过的坑：只 invalidate 页面 → 紧凑档高度纹丝不动、切回来也回不去；再 `adjustSize()` →
+    仍是上一档；`processEvents()` 能对，但那要起事件循环，构造函数里不能用。
+  - 日志卡的取舍：它是唯一「越大越有用」的区域，故 `addWidget(card, 1)` 吃剩余高度；但卡片本身
+    `setMaximumHeight(LOG_MAX_HEIGHT + 上下内边距)` 封顶，最大化到 4K 时不会变成一张大半空白的卡片。
+  - 极小屏靠 `ExportPage.setCompact(True)` 收紧 `CARD_PADDING` / `CARD_SPACING` / `ROW_SPACING`
+    与日志下限（`COMPACT_*` 令牌），**不动字号与控件定宽** —— 那两样一改就会换行、反而更高。
+    实测最小高度 703 → **605**（省 98px），`setCompact(False)` 能完整回到 703（不会残留半档）。
+    窗口最小高度相应 735 → **637**。
+- **显示缩放（高 DPI）**：
+  - `app_gui.py` 在**构造 `QApplication` 之前**调用
+    `QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.RoundPreferFloor)`。
+    Windows 上非整倍缩放（笔记本常见的 125% / 150%）原来按 PassThrough 渲染，界面等比放大
+    25% / 50%，940×860 的设计尺寸在 1080p 上几乎顶满屏；取整后 125%/150% 归到 100%、
+    175% 归到 200%，200% 的 4K 屏本来就是整倍、不受影响。
+  - **代价**：125%/150% 屏上本应用比系统其它应用小一号。用户明确不要可切换开关，
+    所以这不在界面上暴露；要改只能改代码。
+  - **运行时改不了**：换显示器缩放设置后必须重启，提示语里也没提（无开关可提示）。
+  - 不做：`AA_EnableHighDpiScaling`（Qt6 里已是 no-op，加了只会误导）、`build_exe.py` 里塞
+    DPI manifest（Qt 自带 manifest 已声明 per-monitor v2）、自绘缩放。
+  - 窗口尺寸由 `MainWindow._fit_to_screen()` 按 `screen().availableGeometry()` 夹取：
+    大屏保持 `DESIGN_SIZE`（940×860）不铺满，小屏取可用区域的 92%，
+    且 **最小尺寸优先于屏幕**（`max(min_h, ...)` 外层）—— 屏幕真装不下时宁可略出屏，
+    也不把卡片压扁。可用高度装不下内容最小高度时先切紧凑档再夹取（顺序不能反）。
+    窗口位置水平居中、垂直 1/4 偏上；坐标再夹一次到可用区域左上角，
+    避免窗口比屏幕大时标题栏被推到屏外、拖不回来（实测 offscreen 下窗口能跑到 x=-266）。
 - 参数以**组合（profile）**为单位持久化到 exe 同目录 `gh_token_cache.json`：一个组合 = 仓库 + 输出目录 + Token + 数量上限 + 各选项开关；UI 下拉整体切换（`_apply_profile` 组合→控件），点「保存」/导出成功后写回（`_capture_profile` 控件→组合）。Token 为单行输入框，默认掩码显示，「显示明文」切换明文；真值存于 `_token_plain`，`_resolve_token` 负责把掩码还原成真值。
   - 缓存结构 v2：`{"version":2, "profiles":[{name, repo, out, token, max_*, skip_details, include_contents, force, incremental, last_used}], "active": "<组合名>"}`，最多 20 个组合。
   - `load_cache()` 兼容 v1（`{"tokens":[...], "last_repo", "last_out"}`），检测到旧结构时调用 `gui_core.migrate_v1` 转成组合并立即写回，旧数据不删除。
