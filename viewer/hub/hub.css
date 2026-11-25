@@ -280,6 +280,10 @@ body {
   border-bottom: 1px solid var(--border-muted);
 }
 
+.row-link { cursor: pointer; }
+.row-link:hover { background: var(--bg-subtle); }
+.row-link:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
 .row:last-child { border-bottom: 0; }
 
 .row-main { min-width: 0; }

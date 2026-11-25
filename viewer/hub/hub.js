@@ -45,6 +45,7 @@
     hubView: "overview", // 第一层：总览层视图
     repo: null, // 选中的项目文件夹；null = 停留在总览层
     projectView: "overview", // 第二层：项目页视图
+    projectNum: null, // 深链：要直接打开的条目（PR/Issue 编号）
   };
 
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -291,7 +292,9 @@
       const labels = (Array.isArray(item.labels) ? item.labels : [])
         .map((l) => `<span class="pill">${esc(l && l.name)}</span>`)
         .join("");
-      return `<div class="row">
+      return `<div class="row row-link" data-open-folder="${esc(folder)}"
+          data-open-kind="${kind}" data-open-num="${esc(item.number)}"
+          title="在项目页打开这条 ${kind}">
         <div class="row-main">
           <div class="row-title">#${esc(item.number)} ${esc(item.title)}</div>
           <div class="row-meta">
@@ -475,11 +478,14 @@
   }
 
   /* ---------- 渲染入口 ---------- */
-  /* 项目页地址：embed=1 让它隐藏自身侧栏，view= 指定初始视图。
-   * 外层读不到 iframe 的 DOM（跨文件 contentDocument 为 null），所以只能靠 URL 传参。 */
-  function projectSrc(folder, view) {
+  /* 项目页地址：embed=1 让它隐藏自身侧栏，view= 指定初始视图，
+   * num= 直接打开某条详情。外层读不到 iframe 的 DOM（跨文件 contentDocument
+   * 在 file:// 下为 null），所以只能靠 URL 传参。 */
+  function projectSrc(folder, view, num) {
     const segs = String(folder).split("/").filter(Boolean).map(encodeURIComponent);
-    return segs.join("/") + "/index.html?embed=1&view=" + encodeURIComponent(view);
+    let q = "?embed=1&view=" + encodeURIComponent(view);
+    if (num != null && num !== "") q += "&num=" + encodeURIComponent(String(num));
+    return segs.join("/") + "/index.html" + q;
   }
 
   function renderProject() {
@@ -488,9 +494,27 @@
     const label = (PROJECT_VIEWS.find((v) => v.key === view) || {}).label || "";
     return {
       crumb: `${folder} · ${label}`,
-      html: `<iframe class="proj-frame" src="${esc(projectSrc(folder, view))}"
+      html: `<iframe class="proj-frame"
+        src="${esc(projectSrc(folder, view, state.projectNum))}"
         title="${esc(folder)}"></iframe>`,
     };
+  }
+
+  /* 点总览里的条目 → 进对应项目页并直接打开该条详情 */
+  function openItemInProject(folder, kind, num) {
+    if (ORDER.indexOf(folder) < 0) return;
+    state.repo = folder;
+    state.projectView = kind === "PR" ? "prs" : "issues";
+    state.projectNum = num;
+    render();
+  }
+
+  function bindContent() {
+    $$("#content [data-open-folder]").forEach((node) => {
+      node.addEventListener("click", () => {
+        openItemInProject(node.dataset.openFolder, node.dataset.openKind, node.dataset.openNum);
+      });
+    });
   }
 
   function render() {
@@ -518,6 +542,7 @@
       if (crumb) crumb.textContent = "总览";
     }
     renderNav();
+    bindContent();
   }
 
   function renderFoot() {
@@ -557,6 +582,7 @@
           // 再次点击同一个项目 = 回到总览层
           state.repo = state.repo === next ? null : next;
           state.projectView = "overview";
+          state.projectNum = null;
           render();
         });
       });
@@ -583,6 +609,7 @@
     $$("#proj-view-nav .nav-item").forEach((btn) => {
       btn.addEventListener("click", () => {
         state.projectView = btn.dataset.projView;
+        state.projectNum = null;   // 从第二层切视图 = 看列表，不再停在某条详情
         render();
       });
     });
