@@ -1114,6 +1114,95 @@ def copy_viewer(viewer_src: Path, out: Path) -> None:
         dst.write_bytes(src.read_bytes())
 
 
+# 总览根目录需要的 viewer 文件（index.html + hub/ 下的 css、js）
+HUB_VIEWER_FILES = ("hub/index.html", "hub/hub.css", "hub/hub.js")
+
+
+def js_quote(s: str) -> str:
+    """生成可安全嵌进 JS 字面量的字符串（同时防 </script> 提前闭合）。"""
+    body = json.dumps(s, ensure_ascii=False)
+    return body.replace("</", "<\\/")
+
+
+def read_hub_order(path: Path) -> list:
+    """读出 repos.js 里已有的项目清单；文件不存在或损坏都按空清单处理。
+
+    返回的是**文件夹名**列表（相对总览根目录），保持原有顺序。
+    匹配 `window.GH_HUB.order` 时**允许等号两侧有空格**：写出的文件是
+    `window.GH_HUB.order = [`，若这里按无空格精确匹配，第二次导出就会读不回来、
+    把已有项目全部抹掉（单测 test_same_repo_twice_not_duplicated 抓到过）。
+    """
+    if not path.exists():
+        return []
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:
+        return []
+    m = re.search(r"window\.GH_HUB\.order\s*=\s*", text)
+    if not m:
+        return []
+    body = text[m.end():].strip()
+    if body.endswith(";"):
+        body = body[:-1].rstrip()
+    try:
+        val = json.loads(body)
+    except Exception:
+        return []
+    if not isinstance(val, list):
+        return []
+    return [x for x in val if isinstance(x, str)]
+
+
+def write_hub_root(hub_root: Path, viewer_src: Path, folder: str) -> Path:
+    """在总览根目录铺好入口页并登记本项目，返回根目录路径。
+
+    * 只补缺：index.html / hub/* 已存在就不覆盖，避免把用户手工改过的
+      入口页冲掉（也避免两个导出进程互相覆盖）。
+    * repos.js 必须**合并**而不是重写：先读旧清单，把本项目追加到末尾，
+      再原子替换，否则「导出第二个仓库」会把第一个仓库从清单里抹掉。
+    * ``folder`` 是项目文件夹在根目录下的相对名（可含子目录，用 / 分隔）。
+    """
+    hub_root = Path(hub_root)
+    hub_root.mkdir(parents=True, exist_ok=True)
+
+    # 1) 入口页与静态资源（缺了才写）
+    index_dst = hub_root / "index.html"
+    if not index_dst.exists():
+        src = viewer_src / "hub" / "index.html"
+        if not src.exists():
+            raise FileNotFoundError(f"缺少 viewer 文件: {src}")
+        index_dst.write_bytes(src.read_bytes())
+    for rel in ("hub.css", "hub.js"):
+        src = viewer_src / "hub" / rel
+        if not src.exists():
+            raise FileNotFoundError(f"缺少 viewer 文件: {src}")
+        dst = hub_root / "hub" / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if not dst.exists():
+            dst.write_bytes(src.read_bytes())
+
+    # 2) 清单：读旧 → 追加（已存在则不重复）→ 原子替换
+    repos_path = hub_root / "repos.js"
+    order = read_hub_order(repos_path)
+    normalized = str(folder).replace("\\", "/").strip("/")
+    if normalized and normalized not in order:
+        order.append(normalized)
+    lines = [
+        "window.GH_HUB = window.GH_HUB || {};",
+        "window.GH_HUB.order = [",
+    ]
+    for i, name in enumerate(order):
+        comma = "," if i < len(order) - 1 else ""
+        lines.append(f"  {js_quote(name)}{comma}")
+    lines.append("];")
+    payload = "\n".join(lines) + "\n"
+
+    tmp = repos_path.with_suffix(".js.tmp")
+    tmp.write_text(payload, encoding="utf-8")
+    os.replace(tmp, repos_path)   # 原子替换：并发写不会留下半个文件
+    return hub_root
+
+
 def asset_rel(path: str) -> str:
     """把仓库内路径转成 assets 下的相对路径（统一正斜杠）。
 
@@ -1174,6 +1263,23 @@ def export(args) -> Path:
         sys.exit(1)
     out = Path(args.out)
     incremental = bool(getattr(args, "incremental", True))
+
+    # --hub-root 的合法性必须**在任何网络请求之前**校验：
+    # 参数写错却先跑完半小时的拉取再报错，用户会白等一轮。
+    hub_root_arg = getattr(args, "hub_root", None)
+    hub_rel = None
+    if hub_root_arg:
+        try:
+            hub_rel = out.resolve().relative_to(Path(hub_root_arg).resolve()).as_posix()
+        except ValueError:
+            log(f"错误: --hub-root 必须是输出目录的上级目录")
+            log(f"  输出目录: {out.resolve()}")
+            log(f"  --hub-root: {Path(hub_root_arg).resolve()}")
+            log("  总览页只能通过相对路径引用项目包，两者必须在同一棵目录树里。")
+            sys.exit(1)
+        if hub_rel in ("", "."):
+            log("错误: --hub-root 不能与输出目录相同（总览页要放在项目包的上级目录）")
+            sys.exit(1)
 
     if out.exists() and any(out.iterdir()) and not args.force and not incremental:
         log(f"错误: 输出目录已存在且非空: {out}（可加 --force 覆盖，或开启增量导出）")
@@ -2395,6 +2501,15 @@ def export(args) -> Path:
     log("")
     log("完成。请将整个目录拷入内网，双击 index.html 打开。")
     log(f"  路径: {out.resolve()}")
+
+    # 可选：把本包登记进一个多仓库总览根目录（不传就不做任何事）
+    if hub_root_arg and hub_rel:
+        write_hub_root(Path(hub_root_arg), app_root() / "viewer", hub_rel)
+        log("")
+        log("已登记到总览页:")
+        log(f"  入口: {(Path(hub_root_arg) / 'index.html').resolve()}")
+        log(f"  清单: {(Path(hub_root_arg) / 'repos.js').resolve()}（项目名 {hub_rel}）")
+
     return out
 
 
@@ -2429,6 +2544,10 @@ def main():
                     help="本轮最多新拉多少条 commit 的文件 diff；默认与 --max-commits 相同")
     ap.add_argument("--no-assets", action="store_true",
                     help="不下载图片资源（README / PR / Issue 正文图片将无法离线显示）")
+    ap.add_argument("--hub-root", default=None,
+                    help="多仓库总览根目录：导出完成后把本项目登记进该目录的 repos.js，"
+                         "并在缺文件时铺好总览入口页。必须是 --out 的上级目录。"
+                         "不传则完全不改动上级目录")
     args = ap.parse_args()
 
     if not args.out:
