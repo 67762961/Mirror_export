@@ -3,6 +3,32 @@
   "use strict";
 
   const D = window.GH_DATA || {};
+
+  /* ---------- 北京时间（固定 UTC+8） ----------
+   * 查看器显示与统计一律按北京时间，与导出机/查看机所在时区无关。
+   * 做法：时间戳整体平移 +08:00 后只用 UTC 取值。
+   */
+  const TZ_OFFSET_MS = (8 * 60 + 0) * 60 * 1000;
+
+  /* ---------- 外部受控参数（被总览页嵌入 / 深链） ----------
+   * 不带参数打开时行为与改动前完全一致，下列参数只在显式给出时生效：
+   *   ?embed=1   隐藏自身侧栏（总览页用 iframe 嵌本页时）
+   *   ?view=xxx  指定初始视图
+   *   ?num=N     打开对应条目详情（prs/issues 用编号，commits 用 sha）
+   */
+  const VIEW_KEYS = [
+    "overview", "prs", "issues", "commits", "tags",
+    "branches", "compare", "files", "readme",
+  ];
+  const URL_PARAMS = (() => {
+    try {
+      return new URLSearchParams(window.location.search || "");
+    } catch {
+      return new URLSearchParams("");
+    }
+  })();
+  const EMBED_MODE = URL_PARAMS.get("embed") === "1";
+
   const state = {
     view: "overview",
     prFilter: "all",
@@ -111,7 +137,10 @@
     try {
       const d = new Date(iso);
       if (Number.isNaN(d.getTime())) return iso;
-      return d.toLocaleString("zh-CN", { hour12: false });
+      const b = new Date(d.getTime() + TZ_OFFSET_MS);
+      const p = (n) => String(n).padStart(2, "0");
+      return `${b.getUTCFullYear()}/${b.getUTCMonth() + 1}/${b.getUTCDate()} ` +
+        `${p(b.getUTCHours())}:${p(b.getUTCMinutes())}:${p(b.getUTCSeconds())}`;
     } catch {
       return iso;
     }
@@ -1125,6 +1154,7 @@
     }
     $$(".nav-item").forEach((b) => b.classList.toggle("active", b.dataset.view === state.view));
     render();
+    notifyParent();
   }
 
   function setView(view, opts = {}) {
@@ -1145,6 +1175,56 @@
     if (opts.filePath !== undefined) state.filePath = opts.filePath;
     $$(".nav-item").forEach((b) => b.classList.toggle("active", b.dataset.view === view));
     render();
+    notifyParent();
+  }
+
+  /* ---------- 外部受控参数 ----------
+   * 必须在 boot() 里渲染前调用：只认白名单内的值，非法值一律忽略。
+   */
+  function applyUrlParams() {
+    const v = URL_PARAMS.get("view");
+    if (v && VIEW_KEYS.indexOf(v) >= 0) state.view = v;
+
+    const num = URL_PARAMS.get("num");
+    if (num) {
+      if (state.view === "prs") {
+        const n = Number(num);
+        if (Number.isFinite(n)) state.prDetail = n;
+      } else if (state.view === "issues") {
+        const n = Number(num);
+        if (Number.isFinite(n)) state.issueDetail = n;
+      } else if (state.view === "commits") {
+        state.commitDetail = String(num);
+      } else if (state.view === "tags") {
+        state.releaseDetail = String(num);
+      } else if (state.view === "branches") {
+        state.branchDetail = String(num);
+      }
+    }
+  }
+
+  /* ---------- 嵌入模式 ----------
+   * 被总览页 iframe 嵌入时隐藏自身侧栏（只留内容与顶栏），
+   * 并把当前视图回传给父页，供外层面包屑同步。
+   */
+  function applyEmbedMode() {
+    if (!EMBED_MODE) return;
+    document.documentElement.classList.add("embed-mode");
+  }
+
+  function notifyParent() {
+    if (!EMBED_MODE) return;
+    try {
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage({ dshHub: 1, view: state.view, num:
+          state.prDetail != null ? state.prDetail :
+          state.issueDetail != null ? state.issueDetail :
+          state.commitDetail != null ? state.commitDetail : null,
+        }, "*");
+      }
+    } catch {
+      /* 父页不可达（单独打开）时静默忽略 */
+    }
   }
 
   /* ---------- rows ---------- */
@@ -1205,27 +1285,35 @@
   }
 
   /* ---------- contribution wall ---------- */
-  function localDayKey(d) {
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, "0");
-    const day = String(d.getDate()).padStart(2, "0");
+  /* 由「日空间」Date 生成 YYYY-MM-DD：该 Date 的 UTC 字段即年月日 */
+  function dayKeyOf(d) {
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+    const day = String(d.getUTCDate()).padStart(2, "0");
     return `${y}-${m}-${day}`;
   }
 
+  /* ISO 时间戳 → 北京时间的日键 */
   function dayKey(iso) {
     if (!iso) return null;
     try {
       const d = new Date(iso);
       if (Number.isNaN(d.getTime())) return null;
-      return localDayKey(d);
+      return dayKeyOf(new Date(d.getTime() + TZ_OFFSET_MS));
     } catch {
       return null;
     }
   }
 
+  /* YYYY-MM-DD → 日空间 Date（UTC 字段即年月日，可直接做日期加减） */
   function parseDayKey(key) {
     const [y, m, d] = String(key).split("-").map(Number);
-    return new Date(y, (m || 1) - 1, d || 1);
+    return new Date(Date.UTC(y, (m || 1) - 1, d || 1));
+  }
+
+  /* 当前时刻在北京时间的日键 */
+  function bjTodayKey() {
+    return dayKeyOf(new Date(Date.now() + TZ_OFFSET_MS));
   }
 
   function resolveTagDate(tag) {
@@ -1278,13 +1366,13 @@
   function wallDateRange() {
     const { map } = getActivityIndex();
     const endIso = (D.meta && (D.meta.exported_at || D.meta.pushed_at)) || new Date().toISOString();
-    let end = dayKey(endIso) || localDayKey(new Date());
+    let end = dayKey(endIso) || bjTodayKey();
     const keys = Array.from(map.keys()).sort();
     let start = keys[0] || null;
     if (!start) {
       const d = parseDayKey(end);
-      d.setFullYear(d.getFullYear() - 1);
-      start = localDayKey(d);
+      d.setUTCFullYear(d.getUTCFullYear() - 1);
+      start = dayKeyOf(d);
     }
     return { start, end };
   }
@@ -1351,8 +1439,8 @@
     let fromKey = start;
     if (Number.isFinite(days)) {
       const from = parseDayKey(end);
-      from.setDate(from.getDate() - (days - 1));
-      fromKey = localDayKey(from);
+      from.setUTCDate(from.getUTCDate() - (days - 1));
+      fromKey = dayKeyOf(from);
     }
     // 与墙一致：含 from 与 end
     const acc = emptyDayBuckets();
@@ -1379,7 +1467,7 @@
     const startD = parseDayKey(start);
     // 对齐到周日（与 GitHub 一致）
     const gridStart = new Date(startD);
-    gridStart.setDate(gridStart.getDate() - gridStart.getDay());
+    gridStart.setUTCDate(gridStart.getUTCDate() - gridStart.getUTCDay());
 
     const positives = [];
     for (const v of map.values()) {
@@ -1394,9 +1482,9 @@
     while (cursor <= endD) {
       const col = [];
       for (let i = 0; i < 7; i++) {
-        const y = cursor.getFullYear();
-        const m = String(cursor.getMonth() + 1).padStart(2, "0");
-        const dd = String(cursor.getDate()).padStart(2, "0");
+        const y = cursor.getUTCFullYear();
+        const m = String(cursor.getUTCMonth() + 1).padStart(2, "0");
+        const dd = String(cursor.getUTCDate()).padStart(2, "0");
         const day = `${y}-${m}-${dd}`;
         const bucket = map.get(day) || emptyDayBuckets();
         const inRange = day >= start && day <= end;
@@ -1407,12 +1495,12 @@
           tip: inRange ? contribTip(day, bucket) : "",
           muted: !inRange,
         });
-        cursor.setDate(cursor.getDate() + 1);
+        cursor.setUTCDate(cursor.getUTCDate() + 1);
       }
       // 月份标签：该列周日所在月与上一列不同则显示
       const weekMonth = new Date(parseDayKey(col[0].day));
-      const mm = weekMonth.getMonth();
-      months.push(mm !== prevMonth ? weekMonth.getMonth() + 1 : 0);
+      const mm = weekMonth.getUTCMonth();
+      months.push(mm !== prevMonth ? weekMonth.getUTCMonth() + 1 : 0);
       prevMonth = mm;
       weeks.push(col);
     }
@@ -2748,6 +2836,8 @@
 
   function boot() {
     loadAllData();
+    applyEmbedMode();
+    applyUrlParams();
 
     const m = D.meta || {};
     $("#brand-title").textContent = m.full_name || m.repo || "只读镜像";
@@ -2785,6 +2875,7 @@
     });
 
     render();
+    notifyParent();
   }
 
   if (document.readyState === "loading") {
