@@ -666,6 +666,7 @@
 
     if (!ORDER.length) {
       el.classList.remove("embedding");
+      document.documentElement.classList.remove("embedding-active");
       el.innerHTML = `<div class="empty">repos.js 里没有任何仓库。<br/>` +
         `请先运行导出（带 --hub-root）或在 repos.js 中登记项目文件夹。</div>`;
       if (crumb) crumb.textContent = "总览";
@@ -673,13 +674,17 @@
     }
 
     if (state.repo) {
-      // 选中项目时整块内容区换成 iframe，不留内边距，让项目页铺满
+      // 选中项目时整块内容区换成 iframe，不留内边距，让项目页铺满。
+      // embedding-active 挂到 <html> 上：高度链要从根往下确定，
+      // 只改 .content 的话 .main 仍是 min-height，iframe 会被压成 150px。
       el.classList.add("embedding");
+      document.documentElement.classList.add("embedding-active");
       const r = renderProject();
       el.innerHTML = r.html;
       if (crumb) crumb.textContent = r.crumb;
     } else {
       el.classList.remove("embedding");
+      document.documentElement.classList.remove("embedding-active");
       el.innerHTML = renderOverview();
       if (crumb) crumb.textContent = "总览";
     }
