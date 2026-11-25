@@ -1,0 +1,211 @@
+/* 多仓库总览 · 样式（只写总览独有的部分）
+ *
+ * 尺寸与观感**不在这里定义**：index.html 先加载 css/app.css（经 copy 成
+ * hub/app.css），统计块、面板、标题、贡匤墙格子全部沿用项目页那一套。
+ * 这里只补两样项目页没有的东西：
+ *   1) 总览的两层侧栏
+ *   2) 嵌入项目页时的布局
+ * 道理：抄一份尺寸到总览里，两边必然分叉（历史教训：第 1 版抄成 h1 20px /
+ * 格子 10px，而项目页是 24px / 16px，肉眼看得出小一圈）。
+ */
+
+/* ---- 总览顶栏 ---- */
+/* 项目页顶栏有搜索框吃满宽度；总览没有搜索，crumb 与 meta 分居两端 */
+.crumb {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.topbar-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* ---- 总览独有的侧栏分组标题 ---- */
+.nav-group-label {
+  padding: 12px 14px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+}
+
+/* 项目页只有一个 .nav（吃满剩余高度）；总览有「总览 / 项目 / 项目内容」三组，
+   若沿用 flex:1 会被平分成三块、把项目清单顶到半屏。改为按内容高度排。 */
+#app .nav {
+  flex: 0 0 auto;
+  padding: 0 8px;
+}
+
+/* 第二层导航比第一层缩进一档，视觉上从属于当前项目 */
+.nav-sub {
+  padding-left: 22px;
+  font-size: 12px;
+}
+
+/* ---- 嵌入项目页 ---- */
+/* 高度必须是一条**确定**的链，否则 iframe 只长 150px、其余被 overflow:hidden 裁掉。
+ *
+ * 关键点（踩过两次）：
+ *   1. app.css 的 `.content` **没有** flex:1，它靠 `padding + 内容` 撑开。
+ *      一旦给它 overflow:hidden 且内容是 iframe，内容高度不再参与排版 → 塌成 150px。
+ *      所以嵌入态必须显式给 .content 加 flex:1 让它在 flex 列里吃满剩余空间。
+ *   2. #app / .main 在 app.css 里是 `min-height: 100%`，不是确定高度；
+ *      min-height 不构成 flex 的确定基准，flex:1 会退化成内容高度。
+ *      嵌入态改用 100vh（挂在 <html> 的 embedding-active 上）。
+ *
+ * 实测（1280×800 视口）：修复前 iframe 150px；修复后 .main 800 / .content 800 / iframe 800。
+ */
+html.embedding-active,
+html.embedding-active body {
+  height: 100%;
+  overflow: hidden;
+}
+
+html.embedding-active #app {
+  height: 100vh;
+  min-height: 0;
+}
+
+html.embedding-active .main {
+  height: 100%;
+  min-height: 0;
+}
+
+html.embedding-active .content.embedding {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  max-width: none;
+  width: auto;
+}
+
+.proj-frame {
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: block;
+}
+
+/* ---- 总览独有的列表行 ---- */
+/* 项目页的 .row 是 <div data-pr> 那种整行可点；总览的「打开中」行结构一样，
+   只是多了仓库 pill 与 hover 提示。间距与内边距沿用 app.css 的 .row。 */
+.row-link {
+  cursor: pointer;
+}
+
+.row-link:hover {
+  background: var(--bg-subtle);
+}
+
+.row-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.row-list {
+  padding: 0;
+}
+
+.pill-repo {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-family: var(--mono);
+}
+
+/* ---- 仓库表 ---- */
+/* app.css 没有表格样式，这一块是总览独有的。
+ *
+ * 布局要求（用户指定）：计数区的总宽固定，7 个计数列**等宽**，表头与数字
+ * 各自落在列的中心线上。做法：
+ *   - table-layout: fixed —— 列宽由 CSS 指定，不被内容长短撑动
+ *   - 两侧的「仓库」与「导出时间」定宽，剩余的计数区按等分给 7 列
+ *   - 计数列统一 text-align:center，表头与数据同一条中心线
+ *   - 最小列宽由**最长的表头**决定（实测 `Issue(open)` 文字 57.7px + 左右
+ *     内边距 14×2 = 86px），低于它表头会被压成两行或裁字
+ */
+.repo-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  table-layout: fixed;
+}
+
+.repo-table th,
+.repo-table td {
+  padding: 8px 14px;
+  text-align: left;
+  border-bottom: 1px solid var(--border-muted);
+  overflow: hidden;
+}
+
+.repo-table th {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--bg-subtle);
+  white-space: nowrap;
+}
+
+.repo-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+/* 两端的定宽列：仓库名靠左、导出时间靠右，宽度固定不参与等分 */
+.repo-table .repo-col {
+  width: 26%;
+  min-width: 200px;
+  text-align: left;
+}
+
+.repo-table .time-col {
+  width: 19%;
+  min-width: 150px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* 中间的计数列：等宽 + 居中。
+ * calc(55% / 7) —— 总宽 100% 减去两侧 26% + 19% 后的剩余，7 列均分。
+ * 用 calc 而不是写死百分比，两侧列宽调整时计数区自动跟着重算。 */
+.repo-table .num {
+  width: calc(55% / 7);
+  text-align: center;
+  white-space: nowrap;
+  /* 数字等宽：默认字体里 1 比 8 窄，开了之后各位数字在竖直方向对齐 */
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+/* 表头与数据同一条中心线（两者都带 .num，这里显式写出防回归） */
+.repo-table th.num {
+  text-align: center;
+}
+
+.repo-name {
+  font-weight: 500;
+}
+
+/* 窄屏兜底：低于这个宽度时计数列会挤到表头放不下，
+   此时放开固定布局、退回内容自适应（宁可不等宽也不裁字）。 */
+@media (max-width: 900px) {
+  .repo-table {
+    table-layout: auto;
+  }
+  .repo-table .num {
+    width: auto;
+    min-width: 86px;   /* Issue(open) 文字 57.7 + 内边距 28 */
+  }
+  .repo-table .repo-col,
+  .repo-table .time-col {
+    width: auto;
+  }
+}
+
+/* ---- 贡献墙的时间范围汇总 ---- */
+/* 项目页的 .cw-summary 已经在 app.css 里定义，这里只补总览独有的
+   「按仓库分别统计」那一行（如果将来加）。当前沿用项目页。 */

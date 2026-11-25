@@ -1351,3 +1351,18 @@ span.gg-ref-default { box-shadow: 0 0 0 2px var(--green-soft); }
 }
 .gitgraph-legend .gg-ref { font-family: inherit; }
 .gitgraph-legend > span { display: inline-flex; align-items: center; gap: 4px; }
+
+/* ---- 嵌入模式（被总览页 iframe 嵌入） ----
+ * 总览页有自己的侧栏，项目页在嵌入时必须隐藏自身侧栏，避免两层侧栏挤占内容。
+ * 只隐藏侧栏，顶栏（搜索 + 源地址）保留：搜索是项目内能力，隐藏会丢功能。 */
+html.embed-mode .sidebar {
+  display: none;
+}
+
+html.embed-mode #app {
+  display: block;
+}
+
+html.embed-mode .main {
+  min-height: 100vh;
+}

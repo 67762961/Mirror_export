@@ -1,0 +1,167 @@
+"""导出侧单测：write_hub_root / read_hub_order。
+
+直接用 Python 标准库 unittest 跑，不联网、不依赖 PyQt。
+运行：PYTHONIOENCODING=utf-8 python -m unittest tests.test_hub_root -v
+"""
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+import export as ex  # noqa: E402
+
+
+class ReadHubOrderTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_missing_file_returns_empty(self):
+        self.assertEqual(ex.read_hub_order(self.dir / "nope.js"), [])
+
+    def test_reads_written_file(self):
+        p = self.dir / "repos.js"
+        p.write_text(
+            'window.GH_HUB = window.GH_HUB || {};\n'
+            'window.GH_HUB.order = [\n  "A",\n  "B"\n];\n',
+            encoding="utf-8",
+        )
+        self.assertEqual(ex.read_hub_order(p), ["A", "B"])
+
+    def test_corrupt_file_returns_empty(self):
+        p = self.dir / "repos.js"
+        p.write_text("window.GH_HUB.order=[ 坏掉的", encoding="utf-8")
+        self.assertEqual(ex.read_hub_order(p), [])
+
+    def test_non_list_returns_empty(self):
+        p = self.dir / "repos.js"
+        p.write_text('window.GH_HUB.order="A";', encoding="utf-8")
+        self.assertEqual(ex.read_hub_order(p), [])
+
+    def test_filters_non_string_items(self):
+        p = self.dir / "repos.js"
+        p.write_text('window.GH_HUB.order=["A",1,null,"B"];', encoding="utf-8")
+        self.assertEqual(ex.read_hub_order(p), ["A", "B"])
+
+
+class WriteHubRootTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name) / "hubroot"
+        self.viewer = Path(self.tmp.name) / "viewer"
+        # 按清单生成，不手写文件名：清单增加文件时测试自动跟上，
+        # 否则改了 export.HUB_VIEWER_FILES 而夹具没改，会一片 FileNotFoundError
+        for src_rel, _dst_rel in ex.HUB_VIEWER_FILES:
+            f = self.viewer / src_rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text("/* fixture */", encoding="utf-8")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_creates_entry_files_and_manifest(self):
+        ex.write_hub_root(self.root, self.viewer, "RepoA")
+        self.assertTrue((self.root / "index.html").exists())
+        # 静态资源放在 _hub/ 下（不再是 hub/）
+        self.assertTrue((self.root / ex.HUB_DIR / "hub.css").exists())
+        self.assertTrue((self.root / ex.HUB_DIR / "hub.js").exists())
+        self.assertEqual(ex.read_hub_order(self.root / "repos.js"), ["RepoA"])
+
+    def test_appends_second_repo_without_losing_first(self):
+        ex.write_hub_root(self.root, self.viewer, "RepoA")
+        ex.write_hub_root(self.root, self.viewer, "RepoB")
+        self.assertEqual(ex.read_hub_order(self.root / "repos.js"), ["RepoA", "RepoB"])
+
+    def test_same_repo_twice_not_duplicated(self):
+        ex.write_hub_root(self.root, self.viewer, "RepoA")
+        ex.write_hub_root(self.root, self.viewer, "RepoA")
+        self.assertEqual(ex.read_hub_order(self.root / "repos.js"), ["RepoA"])
+
+    def test_same_version_keeps_user_edited_index(self):
+        """同版本重跑导出不得覆盖入口页（这是版本戳要保护的东西）。
+
+        注意与旧行为的区别：旧实现「永远不覆盖」，导致 viewer 升级后
+        用户的旧入口页永远更新不了（白屏 bug 就是这么留下的）。现在改成
+        「版本一致才保留，版本升级就覆盖」，所以这里必须先建出同版本的目录。
+        """
+        ex.write_hub_root(self.root, self.viewer, "RepoA")
+        idx = self.root / "index.html"
+        idx.write_text("USER EDIT", encoding="utf-8")
+        ex.write_hub_root(self.root, self.viewer, "RepoA")   # 同版本
+        self.assertEqual(idx.read_text(encoding="utf-8"), "USER EDIT")
+
+    def test_same_version_keeps_user_edited_css(self):
+        """同版本下不覆盖静态资源；版本升级时才覆盖（见 test_hub_version）。"""
+        ex.write_hub_root(self.root, self.viewer, "RepoA")
+        css = self.root / ex.HUB_DIR / "hub.css"
+        css.write_text("USER CSS", encoding="utf-8")
+        ex.write_hub_root(self.root, self.viewer, "RepoA")   # 同版本
+        self.assertEqual(css.read_text(encoding="utf-8"), "USER CSS")
+
+    def test_no_temp_file_left_behind(self):
+        ex.write_hub_root(self.root, self.viewer, "RepoA")
+        leftovers = [p.name for p in self.root.iterdir() if p.name.endswith(".tmp")]
+        self.assertEqual(leftovers, [])
+
+    def test_nested_folder_kept_as_posix_path(self):
+        ex.write_hub_root(self.root, self.viewer, "group/RepoA")
+        self.assertEqual(ex.read_hub_order(self.root / "repos.js"), ["group/RepoA"])
+
+    def test_backslashes_normalized(self):
+        ex.write_hub_root(self.root, self.viewer, "group\\RepoA")
+        self.assertEqual(ex.read_hub_order(self.root / "repos.js"), ["group/RepoA"])
+
+    def test_empty_folder_name_not_registered(self):
+        ex.write_hub_root(self.root, self.viewer, "")
+        self.assertEqual(ex.read_hub_order(self.root / "repos.js"), [])
+
+    def test_manifest_is_valid_js_literal(self):
+        ex.write_hub_root(self.root, self.viewer, 'weird"name</script>')
+        text = (self.root / "repos.js").read_text(encoding="utf-8")
+        # 不得出现裸 </script>，否则嵌进 HTML 会提前闭合
+        self.assertNotIn("</script>", text)
+        self.assertEqual(ex.read_hub_order(self.root / "repos.js"), ['weird"name</script>'])
+
+    def test_missing_viewer_file_raises(self):
+        (self.viewer / "hub" / "hub.js").unlink()
+        with self.assertRaises(FileNotFoundError):
+            ex.write_hub_root(self.root, self.viewer, "RepoA")
+    def test_preserves_order_across_many(self):
+        names = [f"Repo{i}" for i in range(10)]
+        for n in names:
+            ex.write_hub_root(self.root, self.viewer, n)
+        self.assertEqual(ex.read_hub_order(self.root / "repos.js"), names)
+
+
+    def test_all_hub_viewer_files_copied(self):
+        """HUB_VIEWER_FILES 里的每个文件都必须真的铺到目标位置（清单只有一处）。"""
+        ex.write_hub_root(self.root, self.viewer, "RepoA")
+        for _src_rel, dst_rel in ex.HUB_VIEWER_FILES:
+            dst = self.root / dst_rel
+            self.assertTrue(dst.exists(), f"缺少 {dst_rel} -> {dst}")
+
+    def test_each_hub_viewer_file_is_required(self):
+        """缺任何一个都必须报错，而不是静默少铺一个文件。"""
+        for src_rel, _dst_rel in ex.HUB_VIEWER_FILES:
+            with self.subTest(missing=src_rel):
+                with tempfile.TemporaryDirectory() as td:
+                    root = Path(td) / "root"
+                    viewer = Path(td) / "viewer"
+                    for r, _d in ex.HUB_VIEWER_FILES:
+                        if r == src_rel:
+                            continue
+                        f = viewer / r
+                        f.parent.mkdir(parents=True, exist_ok=True)
+                        f.write_text("x", encoding="utf-8")
+                    with self.assertRaises(FileNotFoundError):
+                        ex.write_hub_root(root, viewer, "RepoA")
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

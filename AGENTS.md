@@ -60,4 +60,25 @@
 - 二进制扩展名见 `export.BINARY_EXT`；单文件正文默认上限 400KB；图片下载上限 2MB（树内图与 PR/Issue/Release 正文外链图共用）。正文外链图落在 `assets/externals/`，URL→本地路径映射写在 `meta.image_map`。调整这些限制时同步更新 README 与 ARCHITECTURE。
 - 查看器 XSS 边界：所有从 GitHub 拉取的 HTML/文本在渲染前必须 `esc()` 或经受控的 `processRichHtml()`；禁止把未转义的 API 字段直接 `innerHTML`。**正文里的原始 HTML 一律先过 `sanitizeHtml()` 白名单**（`viewer/js/app.js` 顶部）：只保留排版类标签与安全属性，丢弃全部 `on*` 事件属性、`style` 属性，以及 `javascript:` / `vbscript:` / `data:` / `blob:` / `file:` 协议。新增可渲染标签或属性时必须同时加进 `SAFE_TAGS` / `SAFE_ATTRS` 白名单，**禁止**退回「黑名单只删 script/iframe」的写法。右键开图等 `window.open` 出口同样必须校验协议（只放行 http(s)/file）。
 - 版本对比（`renderCompare`）用**可达集合差**（`reachableSet` 沿 `parents` 回溯 + `compareResult` 求集合差），**禁止退回按 `commits.js` 数组下标切片**——分支独有提交不在 `commits.js` 里，切片只能近似主干、对分支完全错误。文件差异**只显示导出时预计算好的**（`branches[].compare` / `releases[].compare`），且**方向相反时故意不展示**（增删对调会误导）；改这里时不要"顺手"把反向也算上。
+
+### 多仓库总览（hub）
+- 总览页在 `viewer/hub/`（`index.html` / `hub.css` / `hub.js`），**只在传 `--hub-root` 时**由 `export.write_hub_root()` 铺到输出目录的父目录。不传该参数时导出行为与改动前一致，**不得**让它去碰任何上级目录。
+- **统计必须前端现算，禁止预生成摘要文件**：某个仓库的 `data/*.js` 被单独更新时总览 HTML 不会重写，只有现算才是当前值。为此也不要在 `data/` 下新增 `hub.js` 一类摘要。
+- **口径必须与项目页一致**（改一处必须同步另一处，否则同一仓库在两页上数字不同）：① 时间分桶固定**北京时间 UTC+8**（两边各有一份 `TZ_OFFSET_MS`，改常量必须两边一起改）；② 打开中的 PR = `state === "open" && !merged`，Issue = `state === "open"`，**draft 不排除**；③ 贡献墙逐日来源同 `getActivityIndex()`，Tag 日期按「同名 Release → 指向的 commit」回退，都取不到就不计入并显示「另有 N 个 Tag 日期未知」；④ 跨仓库查 tag 指向的 commit 用**全局 sha 索引**，不逐仓库查。
+- **`file://` 的硬边界**（均已实测，别试回头路）：`fetch` 读本地 JSON 会被拒；ES module 动态 `import()` 失败；跨文件 iframe 的 `contentDocument` 为 **null**（外层读不到也改不了项目页状态，只能靠 URL 传参 + 重建 iframe）；父子页 `postMessage` 双向可用；**Windows 目录联接/符号链接不被跟随**（项目包必须是真实目录）。
+- 引用项目包路径时**必须逐段 `encodeURIComponent`**：`encodeURI` 对空格与 `#` 会静默失败（`#` 之后被当 fragment），失败只体现在 `onerror`。
+- **加载一个 `data/*.js` 后必须立刻取快照并清空 `window.GH_DATA[name]`**：下一个文件会覆盖同名全局键，不立刻取会拿到别的仓库的数据。
+- 两阶段加载：阶段一 `meta/prs/issues`，阶段二 `commits/tags/releases`。阶段二未完成时相关数字必须显示 `…` 而不是 `0`——显示 0 会被误读成「该仓库确实没有提交」。
+- 项目页的受控参数（`?embed=1` / `?view=` / `?num=`）由 `viewer/js/app.js` 消费，**不带参数时行为必须与改动前完全一致**；`view` 只认白名单，非法值退回 `overview`；`num` 的语义随视图而定（PR/Issue 编号、Commit sha、Release/Branch 名称）。改这块要复验「无参数打开逐像素不变」。
+- `repos.js` **必须「读旧 → 追加 → 原子替换」**（`tmp` + `os.replace`），整块重写会抹掉之前登记的项目；已存在的项不重复追加。读取时匹配 `window.GH_HUB.order` 要**允许等号两侧有空白**——写出的文件是 `window.GH_HUB.order = [`，按无空格精确匹配会让第二次导出读不回清单（单测抓到过）。
+- `index.html` 与 `_hub/*.css|js` **只在版本戳不符时写入**（`_hub/version.json` 记 `HUB_ASSET_VERSION`）：同版本重跑导出不冲掉用户手改的入口页，版本升级后才覆盖。**改 `viewer/hub/` 下任何文件、或改变入口页的引用结构时，必须把 `export.HUB_ASSET_VERSION` 加一**——否则老目录永远不更新，「界面改了但用户看到的还是旧版」就是这么来的（实测踩过：入口页停在旧版本、新铺的 app.css 无人引用）。想强行重置：删掉 `_hub/version.json` 再导出。
+- `--hub-root` **必须在任何网络请求之前校验**（必须是 `--out` 的上级目录）：参数写错却先跑完半小时的拉取再报错，用户会白等一轮。
+- 新增 `viewer/hub/` 下的文件时**必须同步 `copy_viewer()` 的白名单与 `HUB_VIEWER_FILES`**，否则导出包缺文件、总览页打不开。`write_hub_root()` **只遍历 `HUB_VIEWER_FILES`**，不要再在函数里硬编码文件名——两处写必然分叉（单测 `test_all_hub_viewer_files_copied` / `test_each_hub_viewer_file_is_required` 守着这条）。
+- GUI 的「同时更新总览库」勾选框（`page.hub_check`）用**输出目录的上一层**作为 `--hub-root`，需要登记进 `self.param_widgets`（导出期间锁定）与 `ExportPage._setup_tab_order()`（Tab 链）。组合字段名是 `hub`，新增/改动时要同时更新 `PROFILE_FIELDS`、`DEFAULT_PROFILE`、`normalize_profile` 的布尔分支、`migrate_v1` 继承列表，以及 `_apply_profile` / `_capture_profile` 两处搬运——漏掉任何一处都会让切组合时该勾选被静默重置。
+- 总览页**必须加载项目页的 `app.css`**（`index.html` 先引 `_hub/app.css` 再引 `_hub/hub.css`），**禁止在 `hub.css` 里重写项目页已有的尺寸/字号/间距**。曾经在 `hub.css` 里另抄一份，抄成了 `h1` 20px/600、`.cw-cell` 10px，与项目页（24px/400、16px）差一圈，肉眼立刻看得出。`hub.css` 只放项目页没有的东西：两层侧栏、嵌入布局、仓库表、贡献墙汇总行。新增需要的样式前先确认 `app.css` 里没有。
+- 贡献墙格子**必须用 `<div>`**（`app.css` 的 `.cw-cell` 按块级元素设计）。用 `<span>` 时宽高不生效、格子会挤成一团。结构也与项目页对齐：`contrib-months` / `contrib-dow` / `contrib-week` / `contrib-legend` / `cw-summary`。
+- 表格类组件里，**表头与数据必须使用同一种对齐**：数值列 `th` 和 `td` 都要带同一个类（仓库表用 `.num`），否则「表头左对齐、数字右对齐」看起来就是纵列歪的（用户反馈过）。
+- 仓库表的列宽布局（改之前先读）：`table-layout: fixed` + 两侧定宽（`.repo-col` 26% / `.time-col` 19%）+ 中间 `calc(55% / 7)` 等分。计数列等宽居中、表头与数字同一条中心线。最小列宽由**最长的表头**决定（`Issue(open)` 实测 57.7px + 内边距 28 = 86px），低于它表头会被挤断。窄屏 <900px 退回 `auto` 布局并给 `min-width: 86px`，宁可不等宽也不裁字。**不要用内容自适应来定列宽**：位数变化会让列宽跳动，「每列等宽、中心对齐」的观感立刻消失。
+- 「选项」行现有 5 个勾选框，行内间距取 `theme.OPTIONS_ROW_SPACING`（12px，不再是行内写死的 18px）。实测最窄 913 下仍余 244px、最小高度不变（735 / 637）；**再加勾选框前必须先量**，别把这一行撑到换行——换行会直接顶高最小高度，进而挤不进 1366×768 的可用高度 728。
+- `tests/` 是本项目唯一的自动化测试目录（标准库 `unittest`，不联网）。改 `write_hub_root` / `read_hub_order` / `--hub-root` 校验后必须跑 `python -m unittest discover -s tests`；本机若 `python` 不可用，用 `D:\ENGINEERING\Python\_dsh_probe2.exe`。
 - 修改或新增算法/数据结构前，必须先阅读 ARCHITECTURE.md，确认数据流和调用链。

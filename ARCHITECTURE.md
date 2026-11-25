@@ -13,7 +13,9 @@
 - 下载 README 等图片资源到本地 `assets/`；
 - 下载 PR / Issue / Release 正文与评论中的外链图片到 `assets/externals/`，并写入 `meta.image_map`；
 - 增量导出：复用上次缓存，只拉有变化的内容；
-- 纯静态查看器：概览 / PR / Issue / Commit / Release / 版本对比 / 文件浏览 / README。
+- 纯静态查看器：项目概览 / PR / Issue / Commit / Release / 版本对比 / 文件浏览 / README；
+- 多仓库总览（可选）：多个镜像放在同一父目录时，父目录的 `index.html` 汇总所有仓库的
+  打开中 PR / Issue、合并贡献墙与各项总数，并可切进任意一个项目页。
 
 运行角色分离：
 
@@ -59,7 +61,15 @@ Mirror_export/
 │   ├── index.html                 壳页面，按序加载 data/*.js 与 js/*.js
 │   ├── css/app.css                GitHub Light 风格样式
 │   ├── js/app.js                  路由、列表、详情、diff、文件树
-│   └── js/gitgraph.js             分支树泳道布局（纯函数，可 Node 单测）
+│   ├── js/gitgraph.js             分支树泳道布局（纯函数，可 Node 单测）
+│   └── hub/                       多仓库总览页模板（只在 --hub-root 时铺到父目录）
+│       ├── index.html             总览壳页面（两层侧栏）
+│       ├── hub.css                复用 app.css 的设计令牌
+│       └── hub.js                 跨仓库加载 / 汇总 / 贡献墙 / 项目切换
+├── tests/                         单元测试（标准库 unittest，无需第三方依赖）
+│   ├── test_hub_root.py           清单读写、去重、原子替换、不覆盖用户改动
+│   ├── test_hub_e2e.py            --hub-root 路径校验
+│   └── test_hub_real_pkgs.py      用本机真实镜像包验证登记链路
 ├── preview/                       本地演示包（无 GitHub 时可打开）
 ├── sample/                        示例数据（结构同 preview/data）
 ├── data/                          开发/调试用数据样例
@@ -272,6 +282,11 @@ python export.py --repo owner/name --full   # 强制全量
 职责：
 
 - 收集 Token / 仓库 / 输出目录 / 数量上限 / 增量与跳过详情等选项；
+- **「同时更新总览库」勾选框**：勾选后 `_resolve_hub_root()` 取**输出目录的上一层**作为
+  `--hub-root` 传给 `export()`。父目录已有 `repos.js` / `index.html`、或含其它带
+  `data/meta.js` 的兄弟目录时直接采用；否则弹二次确认显示将建在哪，取消则本次不登记
+  （勾选状态保留）。枚举父目录失败（只读盘 / 权限受限）按「不像」处理，不让勾选失效。
+  该字段随组合保存（`hub`），缺省 `False`；
 - 后台线程调用 `export_mod.export(args)`；
 - 用 `queue` + `QTimer`（80ms）轮询消费日志与 `__PROGRESS__`；`_apply_progress` 把机器行交给
   `gui_core.parse_progress()` 解析成四段信息，`overall` 缺失时退回 `done/total`（兼容旧 exporter）。
@@ -339,6 +354,10 @@ python export.py --repo owner/name --full   # 强制全量
     的下限 880 宽；把数字框收窄到能裁掉 5 位数的宽度就能回到 841，但那属于用不可读换紧凑，不做。
     各区块最小高度：标题行 30 / 组合 80 / 导出参数 169 / 数量上限 81 / 选项 46 / 操作栏 32 /
     日志卡 154（用户拉高时最多长到 324）/ 状态栏 19，加上 `PAGE_MARGIN`、7 个 10px 间距与标题栏。
+    「选项」行现有 5 个勾选框（含「同时更新总览库」），行内间距取 `theme.OPTIONS_ROW_SPACING = 12`：
+    实测最窄（913）下行可用 833px，5 个共需 541px + 4×12 间距 = 589px，**剩余 244px**，
+    每个勾选框实得 141px（最宽的那个需 128px）。加挂前是 4 个、间距 18px；改为 5 个后
+    最小高度**不变**（常规 735 / 紧凑 637），所以这条不构成新的高度压力。
     注意 offscreen 平台默认没有字体目录、中文会退化成方块，量出来的宽度偏小（曾因此得到
     「930×712」这个偏窄的数）；数值以注册字体后的这一组为准。
   - 量最小尺寸必须走 `ExportPage.contentMinimumSize()`，**不能直接读 `window.minimumSizeHint()`**：
@@ -379,7 +398,7 @@ python export.py --repo owner/name --full   # 强制全量
   - 控件 ↔ 组合的字段搬运只在两处：`_apply_profile`（组合→控件）与 `_capture_profile`（控件→组合），避免字段逻辑散落。`_collect_args()` 仍直接从控件取值，因此**导出核心零影响**。
   - Token 为单行 `LineEdit`（不是下拉框）：真值存于 `_token_plain`，输入框按「显示明文」显示明文或 `mask_token()` 结果；`_resolve_token` 在「输入框内容 == mask_token(_token_plain)」时返回真值（用户没动过），否则以输入框内容为准（用户改了）。`_profile_for_save` 在解析结果为空时保留该组合已存的 Token，避免掩码状态下误清空。
   - `_set_token_field()` 是写 Token 控件的唯一入口（切组合、取环境变量兜底都走它）。
-  - 导出期间 `_set_profile_btns_state(False)` 会锁定**组合区与全部导出参数控件**：组合下拉、四个组合按钮、「清除缓存」，以及 `self.param_widgets` 里登记的仓库 / 输出目录 / 浏览… / Token / 显示明文 / 记住到本机缓存 / 四个数量上限 / 四个选项开关。`_poll` 在 `__DONE__` / `__FAIL__` 两个分支都恢复可用。
+  - 导出期间 `_set_profile_btns_state(False)` 会锁定**组合区与全部导出参数控件**：组合下拉、四个组合按钮、「清除缓存」，以及 `self.param_widgets` 里登记的仓库 / 输出目录 / 浏览… / Token / 显示明文 / 记住到本机缓存 / 四个数量上限 / 五个选项开关（含「同时更新总览库」）。`_poll` 在 `__DONE__` / `__FAIL__` 两个分支都恢复可用。
     - 原因：工作线程在启动时拍下快照、结束后把快照写回磁盘，导出中任何被改动的控件都会在写回时被**静默吞掉**（界面显示新值、缓存里仍是旧值），所以必须锁住全部参数控件，而不只是按钮。
     - 注意：Fluent 控件的 `setEnabled(False)` 自带可见的禁用外观（不必像 ttk 那样补 `style.map`），但仍然要确认新增控件的禁用态**看得出差别**——本项目曾因按钮被禁用却和可点状态长得一样，让用户以为「导出中按钮还能用」。新增控件若要参与导出锁定，记得 `self.param_widgets.append(w)`。
   - `save_cache()` 用「临时文件 + `os.replace`」原子写出，**返回 bool 表示是否真的写成功**；失败时清理 `.tmp` 残留。调用方（`upsert_profile` 等）必须检查返回值：写盘失败（Program Files / 只读 U 盘 / 磁盘满 / 被杀软锁）要抛出或明确提示，**不得**继续打印「已保存」的假成功日志。
@@ -417,7 +436,7 @@ python export.py --repo owner/name --full   # 强制全量
     - **宽度漂移及其消除**：`maxLane` 会随渲染行数增长（并行分支只有在渲染到相应位置时才出现）。若直接用局部布局的宽度，追加后 `maxLane` 变大、**已显示的行会整体右移**。因此 `renderGitGraph()` **先做一趟全量布局**只为取 `probe.laneCount`，第二趟按当前条数渲染并传入 `laneCount: probe.laneCount` 强制同一宽度。实测 3000 节点全量布局仅约 2ms，可忽略。
   - **大列表渲染开销**：瓶颈在 DOM 而非布局（实测 3000 行：布局 ~2ms，占 96% 的时间花在 DOM 解析与回流，约 27k 节点 / 65ms）。因此 `.gitgraph-row` 加 `content-visibility: auto` 跳过视口外行的渲染（**必须同时给 `contain-intrinsic-size: auto 26px`**，否则浏览器不知道离屏行高、滚动条会乱跳）。不支持的浏览器自动忽略，不影响功能；
   - 布局抛异常时只降级为一条提示，不拖垮整页；无 `graph.js` 的旧包不渲染图，仅显示分支表。
-- 概览含 GitHub 风格贡献墙：按日统计 Commit（`author_date`）、PR/Issue（`created_at`）、Release（`published_at`）、Tag（前端用同名 Release 日期或对应 commit 日期推断；无法定位则不进墙）。热力图横滑全历史，默认停在最右；色阶按当日总贡献的四分位（少量非零天时用固定阈值）。墙下汇总行可选 1 天 / 7 天 / 30 天 / 90 天 / 365 天 / 从最初 / 自定义天数，只影响汇总数字，不缩放热力图；变更后将墙滚回最右；
+- 项目概览含 GitHub 风格贡献墙：按日统计 Commit（`author_date`）、PR/Issue（`created_at`）、Release（`published_at`）、Tag（前端用同名 Release 日期或对应 commit 日期推断；无法定位则不进墙）。热力图横滑全历史，默认停在最右；色阶按当日总贡献的四分位（少量非零天时用固定阈值）。墙下汇总行可选 1 天 / 7 天 / 30 天 / 90 天 / 365 天 / 从最初 / 自定义天数，只影响汇总数字，不缩放热力图；变更后将墙滚回最右；
 - 详情页支持：PR 文件 diff、Issue 评论、Commit message 与文件、Release compare 摘要、文件树与已缓存文本源码；
 - **版本对比页**：base / head 都可选**分支或标签**（`compareRefs()` 有 `graph.refs` 时复用 `commitRefs()`，旧包退化为纯 tag 列表）。默认 `base` = 默认分支、`head` = 最新 tag（无 tag 则取第一个非默认分支）。
   - **算法用「可达集合差」而非数组下标切片**：`reachableSet(ref)` 沿 `parents` 回溯得到该 ref 的可达提交集合，`compareResult()` 取 `headSet \ baseSet` 为 head 领先的提交、`baseSet \ headSet` 为落后条数。旧实现用 `commits.js` 的数组下标切片，**对分支根本不成立**（分支独有提交不在 `commits.js` 里，切片只能在主干上近似）；现在经 `commitPool()` 取提交，分支独有提交也能正确对比。
@@ -545,6 +564,85 @@ window.GH_DATA=window.GH_DATA||{};window.GH_DATA.<name>=<compact-json>;
   - 删除旧 exe 时**不能直接 `unlink`**：Windows 上旧 exe 即使进程已退出也可能残留句柄导致
     `PermissionError`，但 **rename 通常能成功** → `remove_locked_artifact()` 先改名再删。
 - `copy_viewer` 从 `app_root()/viewer` 复制到输出目录，**按白名单逐文件复制**（`index.html` / `css/app.css` / `js/app.js` / `js/gitgraph.js`），缺文件会直接报错；新增 viewer 文件必须同步该白名单。
+
+## 8.1 多仓库总览（hub）
+
+多个镜像放在**同一个父目录**时，父目录可以有一个总览入口页。这是**可选功能**：
+不传 `--hub-root` 时导出行为与以前完全一致，不会碰任何上级目录。
+
+### 目录布局
+
+```
+<父目录>/                        ← --hub-root
+├── index.html                   总览入口（版本戳不符时覆盖）
+├── repos.js                     清单：window.GH_HUB.order = ["仓库文件夹", ...]
+├── _hub/                        系统文件（下划线前缀，与项目文件夹区分开）
+│   ├── app.css                  项目页那份 css/app.css 的副本（总览与项目页共用同一套尺寸）
+│   ├── hub.css                  总览独有样式（两层侧栏 / 嵌入布局 / 仓库表）
+│   ├── hub.js                   加载 / 汇总 / 贡献墙 / 项目切换
+│   └── version.json             版本戳：{"version": N, "files": [...]}
+├── RepoA/                       普通镜像包（内容不变）
+└── RepoB/
+```
+
+总览的系统文件统一放 `_hub/`，不再与项目文件夹平铺混在一起：下划线前缀在 Windows
+资源管理器里排在字母项目之前，一眼能分出「系统文件 / 项目内容」。
+
+#### 入口页的版本戳
+
+`_hub/version.json` 记录 `export.HUB_ASSET_VERSION`。`write_hub_root()` 的行为：
+
+| 情况 | 入口页与 `_hub/*.css|js` | 说明 |
+|---|---|---|
+| 目录为空（首次生成） | 写入 | 并写下版本戳 |
+| 版本戳 == 当前版本 | **不写** | 同版本重跑导出不冲掉用户手改的入口页 |
+| 版本戳 != 当前版本（含缺失/损坏） | **覆盖** | 程序升级后重新导出即自动更新；旧 `hub/` 目录同时清理 |
+| `repos.js` | 永远「读旧 → 追加 → 原子替换」 | 与版本无关 |
+
+改 `viewer/hub/` 下任何文件、或改变入口页的引用结构时，**必须同时把
+`HUB_ASSET_VERSION` 加一**，否则老目录不会更新——这正是「界面改了但用户看到的还是旧版」的成因。
+旧布局的 `hub/` 目录在升级时只删我们生成的那三个文件名，不整目录递归，避免误删用户自放的东西。
+
+### 实现要点（改 `viewer/hub/` 前先读）
+
+- **`file://` 下能做什么、不能做什么**（均已实测）：
+  - 能用 `<script src="子目录/data/x.js">` 读兄弟目录；动态 `createElement("script")` 也可以；
+  - **不能用 `fetch`** 读本地 JSON（浏览器拒绝），所以数据只能是 `.js` 赋值文件；
+  - **不能用 ES module**（动态 `import()` 报 `Failed to fetch dynamically imported module`）；
+  - iframe 能正常渲染兄弟目录的页面，但 `contentDocument` 为 **null**：外层读不到也改不了
+    项目页内部状态，只能靠 URL 传参 + 重建 iframe；
+  - 父子页之间的 `postMessage` **双向可用**；
+  - **Windows 目录联接（junction）/ 符号链接不被跟随**：项目包必须是真实目录，否则
+    加载时 `onerror`、总览页报「缺少 xxx.js」。
+- **目录名必须逐段 `encodeURIComponent`**：`encodeURI` 对空格与 `#` 会静默失败
+  （`#` 后面的部分被当作 fragment 丢掉），这类失败没有报错、只在 `onerror` 里体现。
+- **加载一个 `data/*.js` 后必须立刻取快照并清空全局键**：下一个文件会覆盖同名
+  `window.GH_DATA[name]`，不立刻取就会拿到别的仓库的数据。
+- **两阶段加载**：阶段一 `meta/prs/issues`（先出计数与打开列表），阶段二
+  `commits/tags/releases`（补贡献墙与 Commit/Release 数字）。阶段二未完成时这些数字
+  显示 `…` 而不是 `0`——显示 0 会被误读成「该仓库确实没有提交」。
+- **统计由前端现算，不预生成摘要文件**：某个仓库的 `data/*.js` 被单独更新时，
+  总览页的总览 HTML 不会跟着重写；只有现算才能保证数字是当前的。
+- **口径必须与项目页一致**（改一处必须同步另一处，否则同一仓库在两页上数字不同）：
+  - 时间分桶固定**北京时间 UTC+8**，与查看机时区无关；
+  - 打开中的 PR = `state === "open" && !merged`；打开中的 Issue = `state === "open"`；
+    draft 不排除（项目页也没排除）；
+  - 贡献墙逐日来源同项目页 `getActivityIndex()`；Tag 日期按「同名 Release → 指向的 commit」
+    回退，都取不到则不计入并显示「另有 N 个 Tag 日期未知」；
+  - 跨仓库查找 tag 指向的 commit 用**全局 sha 索引**，不逐仓库查：同一份代码可能被拆到
+    多个仓库镜像里。
+- **项目页的受控参数**（由本项目页 `js/app.js` 消费，不带参数时行为与以前一致）：
+  - `?embed=1` 隐藏自身侧栏（否则总览页会出现两层侧栏）；
+  - `?view=<视图>` 指定初始视图，只认白名单，非法值退回 `overview`；
+  - `?num=<编号|sha|名称>` 打开对应条目详情（PR/Issue 用编号，Commit 用 sha，
+    Release/Branch 用名称）。
+- **`repos.js` 必须「读旧 → 追加 → 原子替换」**：整块重写会把之前登记的项目全部抹掉；
+  用 `tmp` + `os.replace` 保证并发写不会留下半个文件。已存在的项不重复追加。
+- **`index.html` 与 `_hub/*.css|js` 只在版本戳不符时写入**（见上「入口页的版本戳」）：
+  同版本重跑不冲掉用户手改的入口页，程序升级后重新导出才覆盖。
+- **`--hub-root` 必须在任何网络请求之前校验**（必须是 `--out` 的上级目录）：
+  参数写错却先跑完半小时的拉取再报错，用户会白等一轮。
+
 
 ## 9. 实施约束
 
