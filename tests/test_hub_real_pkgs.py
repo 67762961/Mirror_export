@@ -15,10 +15,31 @@ sys.path.insert(0, str(ROOT))
 
 import export as ex  # noqa: E402
 
-REAL_PKGS = [
-    Path("D:/_TOOLS/Csv_reader/Csv_viewer_Mirror"),
-    Path("D:/_TOOLS/Mirror_export/Mirror_export_Mirror"),
+# 真实镜像包的位置会随使用者的目录习惯变化（本机就从各项目目录收拢到了
+# D:\_TOOLS\Mirrors）。这里按候选列表探测，一个都找不到才跳过。
+_CANDIDATES = [
+    "D:/_TOOLS/Mirrors",
+    "D:/_TOOLS/Csv_reader",
+    "D:/_TOOLS/Mirror_export",
 ]
+
+
+def _discover_real_pkgs(limit=2):
+    """在候选根目录下找含 data/meta.js 的镜像包，取前 limit 个。"""
+    found = []
+    for root in _CANDIDATES:
+        base = Path(root)
+        if not base.is_dir():
+            continue
+        for p in sorted(base.iterdir()):
+            if len(found) >= limit:
+                return found
+            if (p / "data" / "meta.js").exists():
+                found.append(p)
+    return found
+
+
+REAL_PKGS = _discover_real_pkgs()
 
 
 class RealPackageRegistrationTest(unittest.TestCase):

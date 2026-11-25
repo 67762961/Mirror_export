@@ -39,6 +39,7 @@ from .theme import (
     FIELD_SPACING,
     LOG_MAX_HEIGHT,
     LOG_MIN_HEIGHT,
+    OPTIONS_ROW_SPACING,
     PAGE_MARGIN,
     SPIN_WIDTH,
 )
@@ -144,6 +145,7 @@ class ExportPage(QWidget):
             self.include_contents_check,
             self.force_check,
             self.incremental_check,
+            self.hub_check,
             self.run_btn,
             self.open_btn,
             self.log.text,
@@ -278,14 +280,18 @@ class ExportPage(QWidget):
         self.force_check.setChecked(True)
         self.incremental_check = FocusCheckBox("增量导出", card)
         self.incremental_check.setChecked(True)
+        self.hub_check = FocusCheckBox("同时更新总览库", card)
 
         row = FormRow("选项", card)
-        row.contentLayout.setSpacing(18)
+        # 5 个勾选框挤在一行：间距取紧凑值（原先是 18，实测 5 个时
+        # 每格只剩 136px、最宽的「同时更新总览库」要 128px，余量太薄）
+        row.contentLayout.setSpacing(OPTIONS_ROW_SPACING)
         for widget in (
             self.skip_details_check,
             self.include_contents_check,
             self.force_check,
             self.incremental_check,
+            self.hub_check,
         ):
             row.add(widget)
         card.bodyLayout.addWidget(row)

@@ -34,6 +34,7 @@ PROFILE_FIELDS = (
     "include_contents",
     "force",
     "incremental",
+    "hub",
 )
 
 DEFAULT_PROFILE: Dict[str, Any] = {
@@ -48,6 +49,7 @@ DEFAULT_PROFILE: Dict[str, Any] = {
     "include_contents": True,
     "force": True,
     "incremental": True,
+    "hub": False,
 }
 
 
@@ -106,7 +108,7 @@ def normalize_profile(raw: dict, fallback_name: str = "") -> dict:
                 p[k] = int(v)
             except Exception:
                 pass
-        elif k in ("skip_details", "include_contents", "force", "incremental"):
+        elif k in ("skip_details", "include_contents", "force", "incremental", "hub"):
             p[k] = bool(v)
         else:
             p[k] = ("" if v is None else str(v)).strip()
@@ -165,6 +167,7 @@ def migrate_v1(data: dict) -> dict:
             "skip_details",
             "include_contents",
             "force",
+            "hub",
         ):
             if k in data:
                 raw[k] = data[k]

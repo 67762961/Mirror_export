@@ -115,6 +115,7 @@ class MainWindow(FluentWindowBase):
             self.page.include_contents_check,
             self.page.force_check,
             self.page.incremental_check,
+            self.page.hub_check,
         ]
 
         # 主题必须**先**应用，再写日志：
@@ -308,6 +309,7 @@ class MainWindow(FluentWindowBase):
         page.include_contents_check.setChecked(bool(p.get("include_contents", True)))
         page.force_check.setChecked(bool(p.get("force", True)))
         page.incremental_check.setChecked(bool(p.get("incremental", True)))
+        page.hub_check.setChecked(bool(p.get("hub", False)))
         # Token：按「显示明文」决定显示掩码还是明文
         self._set_token_field(p.get("token") or "")
 
@@ -349,6 +351,7 @@ class MainWindow(FluentWindowBase):
             "include_contents": bool(page.include_contents_check.isChecked()),
             "force": bool(page.force_check.isChecked()),
             "incremental": bool(page.incremental_check.isChecked()),
+            "hub": bool(page.hub_check.isChecked()),
         }
 
     def _profile_for_save(self, name: str) -> dict:
@@ -672,7 +675,46 @@ class MainWindow(FluentWindowBase):
         a.max_commit_diffs = 0 if a.skip_details else int(page.max_commits.value())
         a.no_assets = False
         a.incremental = bool(page.incremental_check.isChecked())
+        a.hub_root = self._resolve_hub_root(out) if page.hub_check.isChecked() else None
         return a
+
+    def _resolve_hub_root(self, out: str) -> str | None:
+        """勾了「同时更新总览库」时，用输出目录的**上一层**作为总览库。
+
+        返回 None 表示用户放弃（取消二次确认）。父目录看起来不像镜像库时
+        先弹二次确认，避免把总览入口铺到完全不相干的位置。
+        """
+        out_path = Path(out).expanduser()
+        # 相对路径按当前工作目录解析；export() 里也用同样的方式算相对名
+        try:
+            out_abs = out_path.resolve()
+        except Exception:
+            out_abs = out_path.absolute()
+        parent = out_abs.parent
+
+        looks_like_hub = (parent / "repos.js").exists() or (parent / "index.html").exists()
+        # 目录可能无权枚举（只读盘 / 权限受限），枚举失败只当作「看起来不像」，
+        # 不能因此把勾选整个作废
+        has_sibling_mirror = False
+        try:
+            has_sibling_mirror = any(
+                (p / "data" / "meta.js").exists()
+                for p in parent.iterdir()
+                if p.is_dir()
+            )
+        except OSError:
+            has_sibling_mirror = False
+
+        if not looks_like_hub and not has_sibling_mirror:
+            ok = self._confirm(
+                "总览库位置可能不对",
+                f"将把总览入口建在：\n{parent}\n\n"
+                "这个目录里没有 repos.js，也没有其它镜像包，"
+                "看起来不像存放镜像的地方。\n\n仍然继续吗？",
+            )
+            if not ok:
+                return None
+        return str(parent)
 
     def _set_profile_btns_state(self, enabled: bool) -> None:
         """导出期间锁定组合区与全部导出参数控件。
