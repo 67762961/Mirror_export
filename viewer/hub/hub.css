@@ -251,3 +251,97 @@ body {
 
 .repo-table tbody tr:last-child td { border-bottom: 0; }
 .repo-table .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* ---- 行列表（打开中的 PR / Issue） ---- */
+.row-list { padding: 0; }
+
+.row {
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border-muted);
+}
+
+.row:last-child { border-bottom: 0; }
+
+.row-main { min-width: 0; }
+
+.row-title {
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.pill {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-subtle);
+  font-size: 11px;
+  line-height: 18px;
+}
+
+.pill-repo {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-family: var(--mono);
+}
+
+/* ---- 贡献墙 ---- */
+.cw-scroll {
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.cw-inner { display: inline-block; min-width: 100%; }
+
+.cw-months {
+  display: flex;
+  gap: 3px;
+  height: 16px;
+}
+
+.cw-month {
+  width: 10px;
+  flex: 0 0 10px;
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.cw-weeks { display: flex; gap: 3px; }
+
+.cw-week { display: flex; flex-direction: column; gap: 3px; }
+
+.cw-cell {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: #ebedf0;
+  display: inline-block;
+}
+
+/* 色阶与项目页 app.css 的 .cw-cell.l1..l4 对齐 */
+.cw-cell.lv1 { background: #9be9a8; }
+.cw-cell.lv2 { background: #40c463; }
+.cw-cell.lv3 { background: #30a14e; }
+.cw-cell.lv4 { background: #216e39; }
+
+.cw-legend {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+}
