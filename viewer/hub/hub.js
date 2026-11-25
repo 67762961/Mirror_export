@@ -22,11 +22,29 @@
   const TZ_OFFSET_MS = (8 * 60 + 0) * 60 * 1000;
 
   const store = Object.create(null); // 文件夹 -> { meta, prs, issues, ... }
-  const failed = Object.create(null); // 文件夹 -> 失败的文件名
+  const failed = Object.create(null); // 文件夹 -> [失败的文件名]
+
+  /* 第二层导航：选中项目后展示该项目页自身的视图。
+   * 「overview」在项目页里已改名为「项目概览」，与第一层的「总览」区分开。 */
+  const PROJECT_VIEWS = [
+    { key: "overview", label: "项目概览" },
+    { key: "prs", label: "Pull Requests" },
+    { key: "issues", label: "Issues" },
+    { key: "commits", label: "Commits" },
+    { key: "tags", label: "Releases" },
+    { key: "branches", label: "Branches" },
+    { key: "compare", label: "版本对比" },
+    { key: "files", label: "文件浏览" },
+    { key: "readme", label: "README" },
+  ];
+  const PROJECT_VIEW_KEYS = PROJECT_VIEWS.map((v) => v.key);
 
   const state = {
     readyPhase1: false,
     readyPhase2: false,
+    hubView: "overview", // 第一层：总览层视图
+    repo: null, // 选中的项目文件夹；null = 停留在总览层
+    projectView: "overview", // 第二层：项目页视图
   };
 
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -457,15 +475,49 @@
   }
 
   /* ---------- 渲染入口 ---------- */
+  /* 项目页地址：embed=1 让它隐藏自身侧栏，view= 指定初始视图。
+   * 外层读不到 iframe 的 DOM（跨文件 contentDocument 为 null），所以只能靠 URL 传参。 */
+  function projectSrc(folder, view) {
+    const segs = String(folder).split("/").filter(Boolean).map(encodeURIComponent);
+    return segs.join("/") + "/index.html?embed=1&view=" + encodeURIComponent(view);
+  }
+
+  function renderProject() {
+    const folder = state.repo;
+    const view = state.projectView;
+    const label = (PROJECT_VIEWS.find((v) => v.key === view) || {}).label || "";
+    return {
+      crumb: `${folder} · ${label}`,
+      html: `<iframe class="proj-frame" src="${esc(projectSrc(folder, view))}"
+        title="${esc(folder)}"></iframe>`,
+    };
+  }
+
   function render() {
     const el = $("#content");
+    const crumb = $("#crumb");
     if (!el) return;
+
     if (!ORDER.length) {
+      el.classList.remove("embedding");
       el.innerHTML = `<div class="empty">repos.js 里没有任何仓库。<br/>` +
         `请先运行导出（带 --hub-root）或在 repos.js 中登记项目文件夹。</div>`;
+      if (crumb) crumb.textContent = "总览";
       return;
     }
-    el.innerHTML = renderOverview();
+
+    if (state.repo) {
+      // 选中项目时整块内容区换成 iframe，不留内边距，让项目页铺满
+      el.classList.add("embedding");
+      const r = renderProject();
+      el.innerHTML = r.html;
+      if (crumb) crumb.textContent = r.crumb;
+    } else {
+      el.classList.remove("embedding");
+      el.innerHTML = renderOverview();
+      if (crumb) crumb.textContent = "总览";
+    }
+    renderNav();
   }
 
   function renderFoot() {
@@ -481,10 +533,66 @@
     }
   }
 
-  function bindNav() {
-    $$(".nav-item").forEach((btn) => {
+  /* ---------- 两层侧栏 ---------- */
+  function renderNav() {
+    // 第一层：总览层视图（选中项目时整体置灰，但保留可见以表示层级）
+    $$("#hub-nav .nav-item").forEach((btn) => {
+      btn.classList.toggle("active", !state.repo && btn.dataset.hubView === state.hubView);
+    });
+
+    // 项目清单：只建一次（避免每次 render 重复绑监听）
+    const repoNav = $("#repo-nav");
+    if (repoNav && repoNav.dataset.built !== "1") {
+      repoNav.innerHTML = ORDER.map((folder) => {
+        const s = store[folder] || {};
+        const meta = s.meta || {};
+        const full = meta.full_name || meta.repo || "";
+        const name = full.indexOf("/") >= 0 ? full.split("/")[1] : folder;
+        return `<button class="nav-item" data-repo="${esc(folder)}" title="${esc(full || folder)}">${esc(name)}</button>`;
+      }).join("");
+      repoNav.dataset.built = "1";
+      $$("#repo-nav .nav-item").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const next = btn.dataset.repo;
+          // 再次点击同一个项目 = 回到总览层
+          state.repo = state.repo === next ? null : next;
+          state.projectView = "overview";
+          render();
+        });
+      });
+    }
+    $$("#repo-nav .nav-item").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.repo === state.repo);
+    });
+
+    // 第二层：选中项目后才出现
+    const projNav = $("#proj-view-nav");
+    const projLabel = $("#proj-view-label");
+    if (!projNav || !projLabel) return;
+    if (!state.repo) {
+      projNav.hidden = true;
+      projLabel.hidden = true;
+      projNav.innerHTML = "";
+      return;
+    }
+    projNav.hidden = false;
+    projLabel.hidden = false;
+    projNav.innerHTML = PROJECT_VIEWS.map((v) =>
+      `<button class="nav-item nav-sub${state.projectView === v.key ? " active" : ""}"
+        data-proj-view="${v.key}">${esc(v.label)}</button>`).join("");
+    $$("#proj-view-nav .nav-item").forEach((btn) => {
       btn.addEventListener("click", () => {
-        $$(".nav-item").forEach((b) => b.classList.toggle("active", b === btn));
+        state.projectView = btn.dataset.projView;
+        render();
+      });
+    });
+  }
+
+  function bindNav() {
+    $$("#hub-nav .nav-item").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        state.repo = null;
+        state.hubView = btn.dataset.hubView;
         render();
       });
     });

@@ -164,6 +164,26 @@ body {
   min-width: 0;
 }
 
+/* 嵌入项目页时去掉内边距与滚动，让 iframe 铺满内容区 */
+.content.embedding {
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+}
+
+.proj-frame {
+  flex: 1;
+  width: 100%;
+  border: 0;
+  min-height: 0;
+}
+
+/* 第二层导航比第一层缩进一档，视觉上从属于当前项目 */
+.nav-sub {
+  padding-left: 22px;
+  font-size: 12px;
+}
+
 /* ---- 通用 ---- */
 .h1 { font-size: 20px; font-weight: 600; margin: 0 0 4px; }
 .muted { color: var(--text-muted); }
