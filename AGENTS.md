@@ -73,6 +73,8 @@
 - `repos.js` **必须「读旧 → 追加 → 原子替换」**（`tmp` + `os.replace`），整块重写会抹掉之前登记的项目；已存在的项不重复追加。读取时匹配 `window.GH_HUB.order` 要**允许等号两侧有空白**——写出的文件是 `window.GH_HUB.order = [`，按无空格精确匹配会让第二次导出读不回清单（单测抓到过）。
 - `index.html` 与 `hub/*.css|js` **只在缺失时写入**：用户可能手工改过入口页，两个导出进程也可能同时往同一父目录登记。
 - `--hub-root` **必须在任何网络请求之前校验**（必须是 `--out` 的上级目录）：参数写错却先跑完半小时的拉取再报错，用户会白等一轮。
-- 新增 `viewer/hub/` 下的文件时**必须同步 `copy_viewer()` 的白名单与 `HUB_VIEWER_FILES`**，否则导出包缺文件、总览页打不开。
+- 新增 `viewer/hub/` 下的文件时**必须同步 `copy_viewer()` 的白名单与 `HUB_VIEWER_FILES`**，否则导出包缺文件、总览页打不开。`write_hub_root()` **只遍历 `HUB_VIEWER_FILES`**，不要再在函数里硬编码文件名——两处写必然分叉（单测 `test_all_hub_viewer_files_copied` / `test_each_hub_viewer_file_is_required` 守着这条）。
+- GUI 的「同时更新总览库」勾选框（`page.hub_check`）用**输出目录的上一层**作为 `--hub-root`，需要登记进 `self.param_widgets`（导出期间锁定）与 `ExportPage._setup_tab_order()`（Tab 链）。组合字段名是 `hub`，新增/改动时要同时更新 `PROFILE_FIELDS`、`DEFAULT_PROFILE`、`normalize_profile` 的布尔分支、`migrate_v1` 继承列表，以及 `_apply_profile` / `_capture_profile` 两处搬运——漏掉任何一处都会让切组合时该勾选被静默重置。
+- 「选项」行现有 5 个勾选框，行内间距取 `theme.OPTIONS_ROW_SPACING`（12px，不再是行内写死的 18px）。实测最窄 913 下仍余 244px、最小高度不变（735 / 637）；**再加勾选框前必须先量**，别把这一行撑到换行——换行会直接顶高最小高度，进而挤不进 1366×768 的可用高度 728。
 - `tests/` 是本项目唯一的自动化测试目录（标准库 `unittest`，不联网）。改 `write_hub_root` / `read_hub_order` / `--hub-root` 校验后必须跑 `python -m unittest discover -s tests`；本机若 `python` 不可用，用 `D:\ENGINEERING\Python\_dsh_probe2.exe`。
 - 修改或新增算法/数据结构前，必须先阅读 ARCHITECTURE.md，确认数据流和调用链。

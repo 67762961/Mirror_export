@@ -282,6 +282,11 @@ python export.py --repo owner/name --full   # 强制全量
 职责：
 
 - 收集 Token / 仓库 / 输出目录 / 数量上限 / 增量与跳过详情等选项；
+- **「同时更新总览库」勾选框**：勾选后 `_resolve_hub_root()` 取**输出目录的上一层**作为
+  `--hub-root` 传给 `export()`。父目录已有 `repos.js` / `index.html`、或含其它带
+  `data/meta.js` 的兄弟目录时直接采用；否则弹二次确认显示将建在哪，取消则本次不登记
+  （勾选状态保留）。枚举父目录失败（只读盘 / 权限受限）按「不像」处理，不让勾选失效。
+  该字段随组合保存（`hub`），缺省 `False`；
 - 后台线程调用 `export_mod.export(args)`；
 - 用 `queue` + `QTimer`（80ms）轮询消费日志与 `__PROGRESS__`；`_apply_progress` 把机器行交给
   `gui_core.parse_progress()` 解析成四段信息，`overall` 缺失时退回 `done/total`（兼容旧 exporter）。
@@ -349,6 +354,10 @@ python export.py --repo owner/name --full   # 强制全量
     的下限 880 宽；把数字框收窄到能裁掉 5 位数的宽度就能回到 841，但那属于用不可读换紧凑，不做。
     各区块最小高度：标题行 30 / 组合 80 / 导出参数 169 / 数量上限 81 / 选项 46 / 操作栏 32 /
     日志卡 154（用户拉高时最多长到 324）/ 状态栏 19，加上 `PAGE_MARGIN`、7 个 10px 间距与标题栏。
+    「选项」行现有 5 个勾选框（含「同时更新总览库」），行内间距取 `theme.OPTIONS_ROW_SPACING = 12`：
+    实测最窄（913）下行可用 833px，5 个共需 541px + 4×12 间距 = 589px，**剩余 244px**，
+    每个勾选框实得 141px（最宽的那个需 128px）。加挂前是 4 个、间距 18px；改为 5 个后
+    最小高度**不变**（常规 735 / 紧凑 637），所以这条不构成新的高度压力。
     注意 offscreen 平台默认没有字体目录、中文会退化成方块，量出来的宽度偏小（曾因此得到
     「930×712」这个偏窄的数）；数值以注册字体后的这一组为准。
   - 量最小尺寸必须走 `ExportPage.contentMinimumSize()`，**不能直接读 `window.minimumSizeHint()`**：
@@ -389,7 +398,7 @@ python export.py --repo owner/name --full   # 强制全量
   - 控件 ↔ 组合的字段搬运只在两处：`_apply_profile`（组合→控件）与 `_capture_profile`（控件→组合），避免字段逻辑散落。`_collect_args()` 仍直接从控件取值，因此**导出核心零影响**。
   - Token 为单行 `LineEdit`（不是下拉框）：真值存于 `_token_plain`，输入框按「显示明文」显示明文或 `mask_token()` 结果；`_resolve_token` 在「输入框内容 == mask_token(_token_plain)」时返回真值（用户没动过），否则以输入框内容为准（用户改了）。`_profile_for_save` 在解析结果为空时保留该组合已存的 Token，避免掩码状态下误清空。
   - `_set_token_field()` 是写 Token 控件的唯一入口（切组合、取环境变量兜底都走它）。
-  - 导出期间 `_set_profile_btns_state(False)` 会锁定**组合区与全部导出参数控件**：组合下拉、四个组合按钮、「清除缓存」，以及 `self.param_widgets` 里登记的仓库 / 输出目录 / 浏览… / Token / 显示明文 / 记住到本机缓存 / 四个数量上限 / 四个选项开关。`_poll` 在 `__DONE__` / `__FAIL__` 两个分支都恢复可用。
+  - 导出期间 `_set_profile_btns_state(False)` 会锁定**组合区与全部导出参数控件**：组合下拉、四个组合按钮、「清除缓存」，以及 `self.param_widgets` 里登记的仓库 / 输出目录 / 浏览… / Token / 显示明文 / 记住到本机缓存 / 四个数量上限 / 五个选项开关（含「同时更新总览库」）。`_poll` 在 `__DONE__` / `__FAIL__` 两个分支都恢复可用。
     - 原因：工作线程在启动时拍下快照、结束后把快照写回磁盘，导出中任何被改动的控件都会在写回时被**静默吞掉**（界面显示新值、缓存里仍是旧值），所以必须锁住全部参数控件，而不只是按钮。
     - 注意：Fluent 控件的 `setEnabled(False)` 自带可见的禁用外观（不必像 ttk 那样补 `style.map`），但仍然要确认新增控件的禁用态**看得出差别**——本项目曾因按钮被禁用却和可点状态长得一样，让用户以为「导出中按钮还能用」。新增控件若要参与导出锁定，记得 `self.param_widgets.append(w)`。
   - `save_cache()` 用「临时文件 + `os.replace`」原子写出，**返回 bool 表示是否真的写成功**；失败时清理 `.tmp` 残留。调用方（`upsert_profile` 等）必须检查返回值：写盘失败（Program Files / 只读 U 盘 / 磁盘满 / 被杀软锁）要抛出或明确提示，**不得**继续打印「已保存」的假成功日志。
