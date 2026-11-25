@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>多仓库总览</title>
+  <link rel="stylesheet" href="hub/hub.css" />
+</head>
+<body>
+  <div id="app">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">◎</div>
+        <div class="brand-text">
+          <div class="brand-title">总览</div>
+          <div class="brand-sub" id="brand-sub">加载中…</div>
+        </div>
+      </div>
+      <div class="nav-group-label">总览</div>
+      <nav class="nav" id="hub-nav">
+        <button class="nav-item active" data-hub-view="overview">总览</button>
+      </nav>
+      <div class="sidebar-foot" id="hub-foot"></div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="crumb" id="crumb">总览</div>
+        <div class="topbar-meta" id="topbar-meta"></div>
+      </header>
+      <div id="content" class="content">
+        <div class="empty">正在加载镜像数据…</div>
+      </div>
+    </main>
+  </div>
+
+  <script src="repos.js"></script>
+  <script src="hub/hub.js"></script>
+</body>
+</html>
