@@ -75,6 +75,9 @@
 - `--hub-root` **必须在任何网络请求之前校验**（必须是 `--out` 的上级目录）：参数写错却先跑完半小时的拉取再报错，用户会白等一轮。
 - 新增 `viewer/hub/` 下的文件时**必须同步 `copy_viewer()` 的白名单与 `HUB_VIEWER_FILES`**，否则导出包缺文件、总览页打不开。`write_hub_root()` **只遍历 `HUB_VIEWER_FILES`**，不要再在函数里硬编码文件名——两处写必然分叉（单测 `test_all_hub_viewer_files_copied` / `test_each_hub_viewer_file_is_required` 守着这条）。
 - GUI 的「同时更新总览库」勾选框（`page.hub_check`）用**输出目录的上一层**作为 `--hub-root`，需要登记进 `self.param_widgets`（导出期间锁定）与 `ExportPage._setup_tab_order()`（Tab 链）。组合字段名是 `hub`，新增/改动时要同时更新 `PROFILE_FIELDS`、`DEFAULT_PROFILE`、`normalize_profile` 的布尔分支、`migrate_v1` 继承列表，以及 `_apply_profile` / `_capture_profile` 两处搬运——漏掉任何一处都会让切组合时该勾选被静默重置。
+- 总览页**必须加载项目页的 `app.css`**（`index.html` 先引 `hub/app.css` 再引 `hub/hub.css`），**禁止在 `hub.css` 里重写项目页已有的尺寸/字号/间距**。曾经在 `hub.css` 里另抄一份，抄成了 `h1` 20px/600、`.cw-cell` 10px，与项目页（24px/400、16px）差一圈，肉眼立刻看得出。`hub.css` 只放项目页没有的东西：两层侧栏、嵌入布局、仓库表、贡献墙汇总行。新增需要的样式前先确认 `app.css` 里没有。
+- 贡献墙格子**必须用 `<div>`**（`app.css` 的 `.cw-cell` 按块级元素设计）。用 `<span>` 时宽高不生效、格子会挤成一团。结构也与项目页对齐：`contrib-months` / `contrib-dow` / `contrib-week` / `contrib-legend` / `cw-summary`。
+- 表格类组件里，**表头与数据必须使用同一种对齐**：数值列 `th` 和 `td` 都要带 `.num`，否则「表头左对齐、数字右对齐」看起来就是纵列歪的（用户反馈过）。
 - 「选项」行现有 5 个勾选框，行内间距取 `theme.OPTIONS_ROW_SPACING`（12px，不再是行内写死的 18px）。实测最窄 913 下仍余 244px、最小高度不变（735 / 637）；**再加勾选框前必须先量**，别把这一行撑到换行——换行会直接顶高最小高度，进而挤不进 1366×768 的可用高度 728。
 - `tests/` 是本项目唯一的自动化测试目录（标准库 `unittest`，不联网）。改 `write_hub_root` / `read_hub_order` / `--hub-root` 校验后必须跑 `python -m unittest discover -s tests`；本机若 `python` 不可用，用 `D:\ENGINEERING\Python\_dsh_probe2.exe`。
 - 修改或新增算法/数据结构前，必须先阅读 ARCHITECTURE.md，确认数据流和调用链。
