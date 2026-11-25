@@ -119,12 +119,20 @@ html.embedding-active .content.embedding {
 
 /* ---- 仓库表 ---- */
 /* app.css 没有表格样式，这一块是总览独有的。
-   表头与数据**必须同一种对齐**：数值列两边都加 .num，否则表头左对齐、
-   数字右对齐，纵列看起来就是歪的（用户反馈过）。 */
+ *
+ * 布局要求（用户指定）：计数区的总宽固定，7 个计数列**等宽**，表头与数字
+ * 各自落在列的中心线上。做法：
+ *   - table-layout: fixed —— 列宽由 CSS 指定，不被内容长短撑动
+ *   - 两侧的「仓库」与「导出时间」定宽，剩余的计数区按等分给 7 列
+ *   - 计数列统一 text-align:center，表头与数据同一条中心线
+ *   - 最小列宽由**最长的表头**决定（实测 `Issue(open)` 文字 57.7px + 左右
+ *     内边距 14×2 = 86px），低于它表头会被压成两行或裁字
+ */
 .repo-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 13px;
+  table-layout: fixed;
 }
 
 .repo-table th,
@@ -132,6 +140,7 @@ html.embedding-active .content.embedding {
   padding: 8px 14px;
   text-align: left;
   border-bottom: 1px solid var(--border-muted);
+  overflow: hidden;
 }
 
 .repo-table th {
@@ -146,20 +155,55 @@ html.embedding-active .content.embedding {
   border-bottom: 0;
 }
 
-/* 数值列：表头与单元格都右对齐 + 等宽数字 */
-.repo-table .num {
+/* 两端的定宽列：仓库名靠左、导出时间靠右，宽度固定不参与等分 */
+.repo-table .repo-col {
+  width: 26%;
+  min-width: 200px;
+  text-align: left;
+}
+
+.repo-table .time-col {
+  width: 19%;
+  min-width: 150px;
   text-align: right;
-  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
-.repo-table .num.th,
+/* 中间的计数列：等宽 + 居中。
+ * calc(55% / 7) —— 总宽 100% 减去两侧 26% + 19% 后的剩余，7 列均分。
+ * 用 calc 而不是写死百分比，两侧列宽调整时计数区自动跟着重算。 */
+.repo-table .num {
+  width: calc(55% / 7);
+  text-align: center;
+  white-space: nowrap;
+  /* 数字等宽：默认字体里 1 比 8 窄，开了之后各位数字在竖直方向对齐 */
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+/* 表头与数据同一条中心线（两者都带 .num，这里显式写出防回归） */
 .repo-table th.num {
-  text-align: right;
+  text-align: center;
 }
 
 .repo-name {
   font-weight: 500;
+}
+
+/* 窄屏兜底：低于这个宽度时计数列会挤到表头放不下，
+   此时放开固定布局、退回内容自适应（宁可不等宽也不裁字）。 */
+@media (max-width: 900px) {
+  .repo-table {
+    table-layout: auto;
+  }
+  .repo-table .num {
+    width: auto;
+    min-width: 86px;   /* Issue(open) 文字 57.7 + 内边距 28 */
+  }
+  .repo-table .repo-col,
+  .repo-table .time-col {
+    width: auto;
+  }
 }
 
 /* ---- 贡献墙的时间范围汇总 ---- */

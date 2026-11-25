@@ -165,7 +165,6 @@
         },
         openPrs: prs.filter((p) => p && p.state === "open" && !p.merged).length,
         openIssues: issues.filter((i) => i && i.state === "open").length,
-        prLimit: (meta.limits && meta.limits.prs) || 0,
         missing: missingText(folder),
       };
     });
@@ -535,21 +534,22 @@
 
   function repoTable(rows) {
     const p2 = state.readyPhase2;
+    // 计数列只显示数字：上限是导出时的抓取预算，不是仓库的真实总量，
+    // 显示成「3 / 10」会被读成「一共 10 个、拉到 3 个」，反而误导。
     const body = rows.map((r) => {
-      const limit = r.prLimit ? `<span class="muted small"> / ${r.prLimit}</span>` : "";
       const commitCell = p2 ? r.counts.commits : `<span class="muted">${PENDING}</span>`;
       const tagCell = p2 ? r.counts.tags : `<span class="muted">${PENDING}</span>`;
       const relCell = p2 ? r.counts.releases : `<span class="muted">${PENDING}</span>`;
       return `<tr>
-        <td>${esc(r.name)}<div class="muted small mono">${esc(r.folder)}</div></td>
-        <td class="num">${r.counts.prs}${limit}</td>
+        <td class="repo-col">${esc(r.name)}<div class="muted small mono">${esc(r.folder)}</div></td>
+        <td class="num">${r.counts.prs}</td>
         <td class="num">${r.counts.issues}</td>
         <td class="num">${commitCell}</td>
         <td class="num">${tagCell}</td>
         <td class="num">${relCell}</td>
         <td class="num">${r.openPrs}</td>
         <td class="num">${r.openIssues}</td>
-        <td class="num small">${esc(fmtDate(r.exportedAt))}${r.missing ? `<div class="muted small">${esc(r.missing)}</div>` : ""}</td>
+        <td class="time-col small">${esc(fmtDate(r.exportedAt))}${r.missing ? `<div class="muted small">${esc(r.missing)}</div>` : ""}</td>
       </tr>`;
     }).join("");
 
@@ -557,11 +557,11 @@
       <div class="panel-hd">仓库</div>
       <table class="repo-table">
         <thead><tr>
-          <th>仓库</th>
+          <th class="repo-col">仓库</th>
           <th class="num">PR</th><th class="num">Issue</th><th class="num">Commit</th>
           <th class="num">Tag</th><th class="num">Release</th>
-          <th class="num">打开 PR</th><th class="num">打开 Issue</th>
-          <th class="num">导出时间（北京时间）</th>
+          <th class="num">PR(open)</th><th class="num">Issue(open)</th>
+          <th class="time-col">导出时间（北京时间）</th>
         </tr></thead>
         <tbody>${body}</tbody>
       </table>

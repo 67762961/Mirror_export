@@ -1131,7 +1131,9 @@ HUB_VIEWER_FILES = (
 # 总览入口页的版本戳。改 viewer/hub/ 下任何文件、或改变入口页的引用结构时，
 # **必须同时改这个数字**：导出时发现根目录里的戳不一致就会覆盖旧入口页。
 # 只用来判断"入口页要不要更新"，与项目包自身的导出版本无关。
-HUB_ASSET_VERSION = 1
+#   v1 → 静态资源收进 _hub/（原 hub/）
+#   v2 → 仓库表改为等宽居中、表头改名 PR(open)/Issue(open)、去掉数量上限后缀
+HUB_ASSET_VERSION = 2
 
 
 def js_quote(s: str) -> str:
