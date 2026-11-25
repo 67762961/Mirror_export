@@ -129,5 +129,29 @@ class WriteHubRootTest(unittest.TestCase):
         self.assertEqual(ex.read_hub_order(self.root / "repos.js"), names)
 
 
+    def test_all_hub_viewer_files_copied(self):
+        """HUB_VIEWER_FILES 里的每个文件都必须真的铺到根目录（清单只有一处）。"""
+        ex.write_hub_root(self.root, self.viewer, "RepoA")
+        for rel in ex.HUB_VIEWER_FILES:
+            dst = self.root / ("index.html" if rel == "hub/index.html" else rel)
+            self.assertTrue(dst.exists(), f"缺少 {rel} -> {dst}")
+
+    def test_each_hub_viewer_file_is_required(self):
+        """缺任何一个都必须报错，而不是静默少铺一个文件。"""
+        for rel in ex.HUB_VIEWER_FILES:
+            with self.subTest(missing=rel):
+                with tempfile.TemporaryDirectory() as td:
+                    root = Path(td) / "root"
+                    viewer = Path(td) / "viewer"
+                    (viewer / "hub").mkdir(parents=True)
+                    for r in ex.HUB_VIEWER_FILES:
+                        if r == rel:
+                            continue
+                        f = viewer / r
+                        f.parent.mkdir(parents=True, exist_ok=True)
+                        f.write_text("x", encoding="utf-8")
+                    with self.assertRaises(FileNotFoundError):
+                        ex.write_hub_root(root, viewer, "RepoA")
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

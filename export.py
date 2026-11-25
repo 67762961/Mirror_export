@@ -1165,18 +1165,14 @@ def write_hub_root(hub_root: Path, viewer_src: Path, folder: str) -> Path:
     hub_root = Path(hub_root)
     hub_root.mkdir(parents=True, exist_ok=True)
 
-    # 1) 入口页与静态资源（缺了才写）
-    index_dst = hub_root / "index.html"
-    if not index_dst.exists():
-        src = viewer_src / "hub" / "index.html"
+    # 1) 入口页与静态资源（缺了才写）。清单只有 HUB_VIEWER_FILES 一处，
+    #    不要再在这里硬编码文件名——两处写必然分叉。
+    for rel in HUB_VIEWER_FILES:
+        src = viewer_src / rel
         if not src.exists():
             raise FileNotFoundError(f"缺少 viewer 文件: {src}")
-        index_dst.write_bytes(src.read_bytes())
-    for rel in ("hub.css", "hub.js"):
-        src = viewer_src / "hub" / rel
-        if not src.exists():
-            raise FileNotFoundError(f"缺少 viewer 文件: {src}")
-        dst = hub_root / "hub" / rel
+        # hub/index.html 铺到根目录，其余按 hub/ 子目录铺
+        dst = hub_root / ("index.html" if rel == "hub/index.html" else rel)
         dst.parent.mkdir(parents=True, exist_ok=True)
         if not dst.exists():
             dst.write_bytes(src.read_bytes())
