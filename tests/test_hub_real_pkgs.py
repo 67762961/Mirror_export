@@ -58,9 +58,12 @@ class RealPackageRegistrationTest(unittest.TestCase):
             # 1) 清单按登记顺序记录两个项目
             self.assertEqual(ex.read_hub_order(root / "repos.js"), names)
 
-            # 2) 入口页与静态资源齐备
-            for rel in ("index.html", "hub/hub.css", "hub/hub.js"):
-                self.assertTrue((root / rel).exists(), rel)
+            # 2) 入口页与静态资源齐备（按清单核对，别硬编码路径）
+            for _src, dst in ex.HUB_VIEWER_FILES:
+                self.assertTrue((root / dst).exists(), dst)
+            self.assertTrue((root / ex.HUB_DIR / "version.json").exists())
+            # 旧 hub/ 目录不应残留（新布局统一在 _hub/）
+            self.assertFalse((root / "hub").exists(), "旧 hub/ 目录未清理")
 
             # 3) 清单是合法 JS 赋值（能按 data/*.js 的同一套约定解析）
             text = (root / "repos.js").read_text(encoding="utf-8")

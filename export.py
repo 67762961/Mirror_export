@@ -1117,12 +1117,21 @@ def copy_viewer(viewer_src: Path, out: Path) -> None:
 # 总览根目录需要的文件：(viewer 内的源路径, 根目录内的目标路径)。
 # hub/index.html 铺到根目录，其余放 hub/ 下；app.css 复用项目页那一份，
 # 让总览与项目页共用同一套尺寸定义（总览另抄一份必然分叉）。
+# 总览根目录需要的文件：(viewer 内的源路径, 根目录内的目标路径)。
+# 系统文件统一放在 _hub/ 下：下划线前缀让它与项目文件夹在资源管理器里分得开
+# （Windows 里 "_" 会排在字母项目之前），避免"一堆项目里掺着一个 hub"的观感。
+HUB_DIR = "_hub"
 HUB_VIEWER_FILES = (
     ("hub/index.html", "index.html"),
-    ("hub/hub.css", "hub/hub.css"),
-    ("hub/hub.js", "hub/hub.js"),
-    ("css/app.css", "hub/app.css"),
+    ("hub/hub.css", HUB_DIR + "/hub.css"),
+    ("hub/hub.js", HUB_DIR + "/hub.js"),
+    ("css/app.css", HUB_DIR + "/app.css"),
 )
+
+# 总览入口页的版本戳。改 viewer/hub/ 下任何文件、或改变入口页的引用结构时，
+# **必须同时改这个数字**：导出时发现根目录里的戳不一致就会覆盖旧入口页。
+# 只用来判断"入口页要不要更新"，与项目包自身的导出版本无关。
+HUB_ASSET_VERSION = 1
 
 
 def js_quote(s: str) -> str:
@@ -1160,30 +1169,84 @@ def read_hub_order(path: Path) -> list:
     return [x for x in val if isinstance(x, str)]
 
 
-def write_hub_root(hub_root: Path, viewer_src: Path, folder: str) -> Path:
+def read_hub_version(hub_root: Path) -> dict:
+    """读出总览根目录里的版本戳；缺失或损坏一律当作「过旧」。
+
+    损坏必须按过旧处理：返回空 dict 会让调用方以 version=0 判为需要升级，
+    从而重新铺一遍入口页——这比"因为一个坏文件就永远不升级"更合理。
+    """
+    p = Path(hub_root) / HUB_DIR / "version.json"
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def write_hub_root(
+    hub_root: Path,
+    viewer_src: Path,
+    folder: str,
+    asset_version: int | None = None,
+) -> Path:
     """在总览根目录铺好入口页并登记本项目，返回根目录路径。
 
-    * 只补缺：index.html / hub/* 已存在就不覆盖，避免把用户手工改过的
-      入口页冲掉（也避免两个导出进程互相覆盖）。
-    * repos.js 必须**合并**而不是重写：先读旧清单，把本项目追加到末尾，
-      再原子替换，否则「导出第二个仓库」会把第一个仓库从清单里抹掉。
+    覆盖策略（带版本戳）：
+    * 每次成功导出都会在 ``_hub/version.json`` 写下 ``HUB_ASSET_VERSION``。
+    * 入口页与静态资源**只在版本戳不一致时**才覆盖。这样：
+      - 同版本重跑导出：不碰它们，用户手工改过的入口页得以保留；
+      - viewer/hub/ 升级后改了 ``HUB_ASSET_VERSION``：自动覆盖成新版；
+      - 老目录没有戳：视为过旧，直接升到当前版本。
+    * ``repos.js`` 与版本无关，永远走「读旧 → 追加 → 原子替换」。
     * ``folder`` 是项目文件夹在根目录下的相对名（可含子目录，用 / 分隔）。
     """
     hub_root = Path(hub_root)
     hub_root.mkdir(parents=True, exist_ok=True)
+    want = HUB_ASSET_VERSION if asset_version is None else int(asset_version)
 
-    # 1) 入口页与静态资源（缺了才写）。清单只有 HUB_VIEWER_FILES 一处，
-    #    不要再在这里硬编码文件名——两处写必然分叉。
-    for src_rel, dst_rel in HUB_VIEWER_FILES:
-        src = viewer_src / src_rel
-        if not src.exists():
-            raise FileNotFoundError(f"缺少 viewer 文件: {src}")
-        dst = hub_root / dst_rel
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        if not dst.exists():
+    current = read_hub_version(hub_root).get("version")
+    need_assets = not isinstance(current, int) or current != want
+
+    # 1) 入口页与静态资源：版本不符才覆盖（清单只有 HUB_VIEWER_FILES 一处）
+    if need_assets:
+        for src_rel, dst_rel in HUB_VIEWER_FILES:
+            src = viewer_src / src_rel
+            if not src.exists():
+                raise FileNotFoundError(f"缺少 viewer 文件: {src}")
+            dst = hub_root / dst_rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
             dst.write_bytes(src.read_bytes())
 
-    # 2) 清单：读旧 → 追加（已存在则不重复）→ 原子替换
+        # 2) 升到新布局后清理旧 hub/ 目录（旧版把静态资源放在这里）。
+        #    只删我们自己生成的那几个文件名，不整目录递归删除——
+        #    万一用户往 hub/ 里放过自己的东西，不能连带删掉。
+        old_dir = hub_root / "hub"
+        legacy = ("hub.css", "hub.js", "app.css")
+        if old_dir.is_dir():
+            for name in legacy:
+                f = old_dir / name
+                if f.is_file():
+                    try:
+                        f.unlink()
+                    except OSError:
+                        pass
+            try:
+                old_dir.rmdir()   # 只有空目录才会成功
+            except OSError:
+                pass
+
+        # 3) 原子写版本戳
+        stamp = hub_root / HUB_DIR / "version.json"
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        tmp = stamp.with_name("version.json.tmp")
+        tmp.write_text(
+            json.dumps({"version": want, "files": [d for _s, d in HUB_VIEWER_FILES]},
+                       ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(tmp, stamp)
+
+    # 4) 清单：读旧 → 追加（已存在则不重复）→ 原子替换
     repos_path = hub_root / "repos.js"
     order = read_hub_order(repos_path)
     normalized = str(folder).replace("\\", "/").strip("/")
