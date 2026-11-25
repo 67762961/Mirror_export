@@ -46,6 +46,9 @@
     repo: null, // 选中的项目文件夹；null = 停留在总览层
     projectView: "overview", // 第二层：项目页视图
     projectNum: null, // 深链：要直接打开的条目（PR/Issue 编号）
+    // 贡献墙的汇总时间窗（与项目页同一套档位与默认值）
+    rangeKey: "7",
+    rangeCustomDays: 30,
   };
 
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -347,6 +350,82 @@
     return { start, end };
   }
 
+  /* ---------- 时间范围汇总（与项目页同一套档位与口径） ---------- */
+  const RANGE_OPTIONS = [
+    ["1", "1 天"],
+    ["7", "7 天"],
+    ["30", "一个月"],
+    ["90", "三个月"],
+    ["365", "一年"],
+    ["all", "从最初"],
+    ["custom", "自定义…"],
+  ];
+
+  function rangeWindowDays() {
+    switch (state.rangeKey) {
+      case "1": return 1;
+      case "7": return 7;
+      case "30": return 30;
+      case "90": return 90;
+      case "365": return 365;
+      case "all": return Infinity;
+      case "custom": {
+        const n = Number(state.rangeCustomDays);
+        return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 7;
+      }
+      default: return 7;
+    }
+  }
+
+  function emptyBuckets() {
+    return { commit: 0, pr: 0, issue: 0, tag: 0, release: 0, total: 0 };
+  }
+
+  /* 汇总时间窗内的各类型贡献：口径与项目页 summarizeRange() 一致，
+   * 只是数据源是全部仓库合并后的 map */
+  function summarizeRange(map) {
+    const { end } = wallRange(map);
+    const days = rangeWindowDays();
+    let fromKey = null;
+    if (Number.isFinite(days)) {
+      const from = parseDayKey(end);
+      from.setUTCDate(from.getUTCDate() - (days - 1));
+      fromKey = dayKeyOf(from);
+    }
+    const acc = emptyBuckets();
+    for (const [k, v] of map.entries()) {
+      if (fromKey && k < fromKey) continue;
+      if (k > end) continue;
+      acc.commit += v.commit;
+      acc.pr += v.pr;
+      acc.issue += v.issue;
+      acc.tag += v.tag;
+      acc.release += v.release;
+      acc.total += v.total;
+    }
+    let label;
+    if (state.rangeKey === "1") label = "今天";
+    else if (state.rangeKey === "all") label = "从最初";
+    else label = `最近 ${rangeWindowDays()} 天`;
+    return { acc, label, fromKey, end };
+  }
+
+  function rangeSummaryText(sum) {
+    const n = (x) => `<span class="cw-num">${x}</span>`;
+    const parts = [
+      `${n(sum.acc.commit)} 次提交`,
+      `${n(sum.acc.pr)} 个 PR`,
+      `${n(sum.acc.issue)} 个 Issue`,
+      `${n(sum.acc.tag)} 个 Tag`,
+      `${n(sum.acc.release)} 个 Release`,
+    ];
+    return `${esc(sum.label)}：${parts.join("、")}`;
+  }
+
+  /* ---------- 贡献墙 ---------- */
+  /* 结构与项目页 renderContribWall() 一一对应（月份行 / 星期列 / 周列 / 图例 /
+   * 汇总行），格子也用 <div>：项目页 .cw-cell 是 div，<span> 是行内元素，
+   * 给宽高不生效（第 1 版就踩了这个，格子只有 10px 且挤在一起）。 */
   function renderContribWall() {
     const { map, tagUnknown } = getActivityIndex();
     const { start, end } = wallRange(map);
@@ -363,6 +442,7 @@
     const months = [];
     let prevMonth = null;
     const cursor = new Date(gridStart);
+    let wi = 0;
     while (cursor <= endD) {
       const col = [];
       for (let i = 0; i < 7; i++) {
@@ -370,32 +450,64 @@
         const inRange = cursor <= endD;
         const n = inRange ? ((map.get(k) || { total: 0 }).total) : 0;
         const lv = inRange ? levelForCount(n, positives) : 0;
-        const title = inRange ? `${k} · ${n} 次贡献` : "";
-        col.push(`<span class="cw-cell lv${lv}" title="${esc(title)}"></span>`);
+        if (!inRange) {
+          // 结尾不足一周的部分留空位，避免最后一行高度不齐
+          col.push(`<div class="cw-cell" style="visibility:hidden"></div>`);
+        } else {
+          col.push(`<div class="cw-cell${lv ? " l" + lv : ""}" title="${esc(`${k} · ${n} 次贡献`)}"></div>`);
+        }
         cursor.setUTCDate(cursor.getUTCDate() + 1);
       }
       const colStart = new Date(gridStart);
-      colStart.setUTCDate(colStart.getUTCDate() + weeks.length * 7);
+      colStart.setUTCDate(colStart.getUTCDate() + wi * 7);
       const mm = colStart.getUTCMonth();
-      months.push(mm !== prevMonth ? `<span class="cw-month">${mm + 1}月</span>` : `<span class="cw-month"></span>`);
+      months.push(
+        `<div class="contrib-month-label">${mm !== prevMonth ? mm + 1 + "月" : ""}</div>`
+      );
       prevMonth = mm;
-      weeks.push(`<div class="cw-week">${col.join("")}</div>`);
+      wi++;
+      weeks.push(`<div class="contrib-week">${col.join("")}</div>`);
     }
 
-    const legend = [1, 2, 3, 4].map((lv) => `<span class="cw-cell lv${lv}"></span>`).join("");
+    const legend = [0, 1, 2, 3, 4]
+      .map((lv) => `<div class="cw-cell${lv ? " l" + lv : ""}"></div>`)
+      .join("");
+
+    const sum = summarizeRange(map);
+    const rangeOptions = RANGE_OPTIONS
+      .map(([v, lab]) => `<option value="${v}"${state.rangeKey === v ? " selected" : ""}>${lab}</option>`)
+      .join("");
+
     const unknown = tagUnknown
-      ? `<div class="muted small" style="margin-top:8px">另有 ${tagUnknown} 个 Tag 日期未知，未计入热力图。</div>`
+      ? `<div class="muted small">另有 ${tagUnknown} 个 Tag 日期未知，未计入热力图。</div>`
       : "";
 
     return `<div class="panel">
       <div class="panel-hd">总贡献墙
         <span class="muted small">· 北京时间（UTC+8）· 合并 ${ORDER.length} 个仓库</span></div>
-      <div class="panel-bd">
-        <div class="cw-scroll"><div class="cw-inner">
-          <div class="cw-months">${months.join("")}</div>
-          <div class="cw-weeks">${weeks.join("")}</div>
-        </div></div>
-        <div class="cw-legend muted small">少 ${legend} 多</div>
+      <div class="panel-bd contrib-body">
+        <div class="contrib-scroll" id="contrib-scroll">
+          <div class="contrib-inner">
+            <div class="contrib-months">${months.join("")}</div>
+            <div class="contrib-main">
+              <div class="contrib-dow" aria-hidden="true">
+                <span></span><span>一</span><span></span><span>三</span><span></span><span>五</span><span></span>
+              </div>
+              <div class="contrib-weeks">${weeks.join("")}</div>
+            </div>
+          </div>
+        </div>
+        <div class="contrib-footer">
+          <div class="contrib-legend">Less${legend}More</div>
+          <div class="cw-summary">
+            <select id="cw-range" aria-label="汇总时间范围">${rangeOptions}</select>
+            <input id="cw-custom-days" type="number" min="1" max="20000" step="1"
+              value="${esc(String(state.rangeCustomDays))}"
+              ${state.rangeKey === "custom" ? "" : "hidden"}
+              aria-label="自定义天数" />
+            <span id="cw-summary-text">${rangeSummaryText(sum)}</span>
+          </div>
+        </div>
         ${unknown}
       </div>
     </div>`;
@@ -437,7 +549,7 @@
         <td class="num">${relCell}</td>
         <td class="num">${r.openPrs}</td>
         <td class="num">${r.openIssues}</td>
-        <td class="small">${esc(fmtDate(r.exportedAt))}${r.missing ? `<div class="muted small">${esc(r.missing)}</div>` : ""}</td>
+        <td class="num small">${esc(fmtDate(r.exportedAt))}${r.missing ? `<div class="muted small">${esc(r.missing)}</div>` : ""}</td>
       </tr>`;
     }).join("");
 
@@ -445,8 +557,11 @@
       <div class="panel-hd">仓库</div>
       <table class="repo-table">
         <thead><tr>
-          <th>仓库</th><th>PR</th><th>Issue</th><th>Commit</th><th>Tag</th><th>Release</th>
-          <th>打开 PR</th><th>打开 Issue</th><th>导出时间（北京时间）</th>
+          <th>仓库</th>
+          <th class="num">PR</th><th class="num">Issue</th><th class="num">Commit</th>
+          <th class="num">Tag</th><th class="num">Release</th>
+          <th class="num">打开 PR</th><th class="num">打开 Issue</th>
+          <th class="num">导出时间（北京时间）</th>
         </tr></thead>
         <tbody>${body}</tbody>
       </table>
@@ -515,6 +630,33 @@
         openItemInProject(node.dataset.openFolder, node.dataset.openKind, node.dataset.openNum);
       });
     });
+
+    // 贡献墙汇总时间窗：属同页筛选，不入任何导航状态（与项目页同口径）
+    const rangeSel = $("#cw-range");
+    if (rangeSel) {
+      rangeSel.addEventListener("change", () => {
+        state.rangeKey = rangeSel.value;
+        render();
+      });
+    }
+    const customDays = $("#cw-custom-days");
+    if (customDays) {
+      const applyCustomDays = () => {
+        const n = Number(customDays.value);
+        state.rangeCustomDays = Number.isFinite(n) && n >= 1 ? Math.floor(n) : 1;
+        // 只刷新汇总文字，不整页重绘（否则输入框会丢焦点）
+        const tip = $("#cw-summary-text");
+        if (tip) tip.innerHTML = rangeSummaryText(summarizeRange(getActivityIndex().map));
+      };
+      customDays.addEventListener("input", applyCustomDays);
+      customDays.addEventListener("change", applyCustomDays);
+    }
+  }
+
+  /* 贡献墙默认停在最右侧（最新）；换范围后同样拉回最右。 */
+  function scrollContribToEnd() {
+    const sc = document.getElementById("contrib-scroll");
+    if (sc) sc.scrollLeft = sc.scrollWidth;
   }
 
   function render() {
@@ -543,6 +685,8 @@
     }
     renderNav();
     bindContent();
+    // 贡献墙默认停在最右侧（最新）；换范围后也会经 render 再次拉回最右
+    if (!state.repo && state.hubView === "overview") scrollContribToEnd();
   }
 
   function renderFoot() {

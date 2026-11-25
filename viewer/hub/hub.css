@@ -1,86 +1,27 @@
-/* 多仓库总览 · 样式
- * 复用项目页（css/app.css）的设计令牌与观感，避免总览页看起来是另一个程序。
- * 令牌值刻意与 app.css 保持一致：改一处必须同步另一处。 */
-:root {
-  --bg: #ffffff;
-  --bg-subtle: #f6f8fa;
-  --bg-inset: #f6f8fa;
-  --border: #d0d7de;
-  --border-muted: #d8dee4;
-  --text: #1f2328;
-  --text-muted: #656d76;
-  --text-faint: #8c959f;
-  --accent: #0969da;
-  --accent-soft: rgba(9, 105, 218, 0.1);
-  --green: #1a7f37;
-  --green-soft: rgba(26, 127, 55, 0.12);
-  --red: #cf222e;
-  --red-soft: rgba(207, 34, 46, 0.1);
-  --purple: #8250df;
-  --purple-soft: rgba(130, 80, 223, 0.12);
-  --yellow: #9a6700;
-  --orange: #bc4c00;
-  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
-  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", "PingFang SC",
-    "Microsoft YaHei", Helvetica, Arial, sans-serif;
-  --sidebar-w: 240px;
-  --radius: 6px;
+/* 多仓库总览 · 样式（只写总览独有的部分）
+ *
+ * 尺寸与观感**不在这里定义**：index.html 先加载 css/app.css（经 copy 成
+ * hub/app.css），统计块、面板、标题、贡匤墙格子全部沿用项目页那一套。
+ * 这里只补两样项目页没有的东西：
+ *   1) 总览的两层侧栏
+ *   2) 嵌入项目页时的布局
+ * 道理：抄一份尺寸到总览里，两边必然分叉（历史教训：第 1 版抄成 h1 20px /
+ * 格子 10px，而项目页是 24px / 16px，肉眼看得出小一圈）。
+ */
+
+/* ---- 总览顶栏 ---- */
+/* 项目页顶栏有搜索框吃满宽度；总览没有搜索，crumb 与 meta 分居两端 */
+.crumb {
+  font-weight: 600;
+  font-size: 13px;
 }
 
-* { box-sizing: border-box; }
-html, body { height: 100%; }
-body {
-  margin: 0;
-  font-family: var(--sans);
-  font-size: 14px;
-  line-height: 1.5;
-  color: var(--text);
-  background: var(--bg);
+.topbar-meta {
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
-#app {
-  display: flex;
-  min-height: 100%;
-}
-
-/* ---- 侧栏 ---- */
-.sidebar {
-  width: var(--sidebar-w);
-  flex-shrink: 0;
-  background: var(--bg-subtle);
-  border-right: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  position: sticky;
-  top: 0;
-  height: 100vh;
-  overflow: auto;
-}
-
-.brand {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  padding: 16px 14px 12px;
-  border-bottom: 1px solid var(--border-muted);
-}
-
-.brand-mark {
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, #1a7f37, #0969da);
-  display: grid;
-  place-items: center;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  color: #fff;
-}
-
-.brand-title { font-size: 13px; font-weight: 600; }
-.brand-sub { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
-
+/* ---- 总览独有的侧栏分组标题 ---- */
 .nav-group-label {
   padding: 12px 14px 4px;
   font-size: 11px;
@@ -89,86 +30,26 @@ body {
   letter-spacing: 0.02em;
 }
 
-.nav {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
+/* 项目页只有一个 .nav（吃满剩余高度）；总览有「总览 / 项目 / 项目内容」三组，
+   若沿用 flex:1 会被平分成三块、把项目清单顶到半屏。改为按内容高度排。 */
+#app .nav {
+  flex: 0 0 auto;
   padding: 0 8px;
 }
 
-.nav-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  width: 100%;
-  padding: 6px 10px;
-  border: 0;
-  border-radius: var(--radius);
-  background: transparent;
-  color: var(--text);
-  font: inherit;
-  font-size: 13px;
-  text-align: left;
-  cursor: pointer;
+/* 第二层导航比第一层缩进一档，视觉上从属于当前项目 */
+.nav-sub {
+  padding-left: 22px;
+  font-size: 12px;
 }
 
-.nav-item:hover { background: rgba(208, 215, 222, 0.45); }
-.nav-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
-.nav-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-
-.badge {
-  font-size: 11px;
-  font-weight: 400;
-  color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.sidebar-foot {
-  margin-top: auto;
-  padding: 12px 14px 16px;
-  border-top: 1px solid var(--border-muted);
-  font-size: 11px;
-  color: var(--text-faint);
-  line-height: 1.5;
-}
-
-/* ---- 主区 ---- */
-.main {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-.topbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 12px 20px;
-  border-bottom: 1px solid var(--border);
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  background: rgba(255, 255, 255, 0.92);
-  backdrop-filter: blur(8px);
-}
-
-.crumb { font-size: 13px; font-weight: 600; }
-.topbar-meta { font-size: 12px; color: var(--text-muted); }
-
-.content {
-  flex: 1;
-  padding: 20px 24px 40px;
-  min-width: 0;
-}
-
-/* 嵌入项目页时去掉内边距与滚动，让 iframe 铺满内容区 */
+/* ---- 嵌入项目页 ---- */
+/* 项目页自己有 .content 内边距，外层再去掉自己的内边距并让 iframe 铺满 */
 .content.embedding {
   padding: 0;
   overflow: hidden;
   display: flex;
+  max-width: none;
 }
 
 .proj-frame {
@@ -178,76 +59,37 @@ body {
   min-height: 0;
 }
 
-/* 第二层导航比第一层缩进一档，视觉上从属于当前项目 */
-.nav-sub {
-  padding-left: 22px;
-  font-size: 12px;
+/* ---- 总览独有的列表行 ---- */
+/* 项目页的 .row 是 <div data-pr> 那种整行可点；总览的「打开中」行结构一样，
+   只是多了仓库 pill 与 hover 提示。间距与内边距沿用 app.css 的 .row。 */
+.row-link {
+  cursor: pointer;
 }
 
-/* ---- 通用 ---- */
-.h1 { font-size: 20px; font-weight: 600; margin: 0 0 4px; }
-.muted { color: var(--text-muted); }
-.small { font-size: 12px; }
-.mono { font-family: var(--mono); }
-
-.empty {
-  padding: 24px;
-  text-align: center;
-  color: var(--text-muted);
-  font-size: 13px;
-}
-
-.warn-box {
-  border: 1px solid var(--yellow);
-  background: rgba(154, 103, 0, 0.08);
-  color: var(--text);
-  border-radius: var(--radius);
-  padding: 8px 12px;
-  font-size: 12px;
-  margin-bottom: 14px;
-}
-
-.panel {
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  margin-bottom: 16px;
-  overflow: hidden;
-}
-
-.panel-hd {
-  padding: 8px 12px;
+.row-link:hover {
   background: var(--bg-subtle);
-  border-bottom: 1px solid var(--border);
-  font-size: 13px;
-  font-weight: 600;
 }
 
-.panel-bd { padding: 12px; }
-
-/* ---- 统计块 ---- */
-.stats {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  gap: 10px;
-  margin-bottom: 16px;
+.row-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
-.stat {
-  background: var(--bg-subtle);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 12px 14px;
+.row-list {
+  padding: 0;
 }
 
-.stat-n {
-  font-size: 22px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
+.pill-repo {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-family: var(--mono);
 }
-
-.stat-l { font-size: 12px; color: var(--text-muted); }
 
 /* ---- 仓库表 ---- */
+/* app.css 没有表格样式，这一块是总览独有的。
+   表头与数据**必须同一种对齐**：数值列两边都加 .num，否则表头左对齐、
+   数字右对齐，纵列看起来就是歪的（用户反馈过）。 */
 .repo-table {
   width: 100%;
   border-collapse: collapse;
@@ -256,7 +98,7 @@ body {
 
 .repo-table th,
 .repo-table td {
-  padding: 7px 12px;
+  padding: 8px 14px;
   text-align: left;
   border-bottom: 1px solid var(--border-muted);
 }
@@ -269,103 +111,26 @@ body {
   white-space: nowrap;
 }
 
-.repo-table tbody tr:last-child td { border-bottom: 0; }
-.repo-table .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-
-/* ---- 行列表（打开中的 PR / Issue） ---- */
-.row-list { padding: 0; }
-
-.row {
-  padding: 9px 12px;
-  border-bottom: 1px solid var(--border-muted);
+.repo-table tbody tr:last-child td {
+  border-bottom: 0;
 }
 
-.row-link { cursor: pointer; }
-.row-link:hover { background: var(--bg-subtle); }
-.row-link:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* 数值列：表头与单元格都右对齐 + 等宽数字 */
+.repo-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 
-.row:last-child { border-bottom: 0; }
+.repo-table .num.th,
+.repo-table th.num {
+  text-align: right;
+}
 
-.row-main { min-width: 0; }
-
-.row-title {
-  font-size: 13px;
+.repo-name {
   font-weight: 500;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
-.row-meta {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  margin-top: 2px;
-  font-size: 12px;
-  color: var(--text-muted);
-}
-
-.pill {
-  display: inline-block;
-  padding: 0 6px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--bg-subtle);
-  font-size: 11px;
-  line-height: 18px;
-}
-
-.pill-repo {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-family: var(--mono);
-}
-
-/* ---- 贡献墙 ---- */
-.cw-scroll {
-  overflow-x: auto;
-  padding-bottom: 4px;
-}
-
-.cw-inner { display: inline-block; min-width: 100%; }
-
-.cw-months {
-  display: flex;
-  gap: 3px;
-  height: 16px;
-}
-
-.cw-month {
-  width: 10px;
-  flex: 0 0 10px;
-  font-size: 10px;
-  color: var(--text-muted);
-  white-space: nowrap;
-}
-
-.cw-weeks { display: flex; gap: 3px; }
-
-.cw-week { display: flex; flex-direction: column; gap: 3px; }
-
-.cw-cell {
-  width: 10px;
-  height: 10px;
-  border-radius: 2px;
-  background: #ebedf0;
-  display: inline-block;
-}
-
-/* 色阶与项目页 app.css 的 .cw-cell.l1..l4 对齐 */
-.cw-cell.lv1 { background: #9be9a8; }
-.cw-cell.lv2 { background: #40c463; }
-.cw-cell.lv3 { background: #30a14e; }
-.cw-cell.lv4 { background: #216e39; }
-
-.cw-legend {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin-top: 8px;
-}
+/* ---- 贡献墙的时间范围汇总 ---- */
+/* 项目页的 .cw-summary 已经在 app.css 里定义，这里只补总览独有的
+   「按仓库分别统计」那一行（如果将来加）。当前沿用项目页。 */

@@ -56,10 +56,12 @@ class WriteHubRootTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name) / "hubroot"
         self.viewer = Path(self.tmp.name) / "viewer"
-        (self.viewer / "hub").mkdir(parents=True)
-        (self.viewer / "hub" / "index.html").write_text("<!doctype html><title>hub</title>", encoding="utf-8")
-        (self.viewer / "hub" / "hub.css").write_text("/*css*/", encoding="utf-8")
-        (self.viewer / "hub" / "hub.js").write_text("/*js*/", encoding="utf-8")
+        # 按清单生成，不手写文件名：清单增加文件时测试自动跟上，
+        # 否则改了 export.HUB_VIEWER_FILES 而夹具没改，会一片 FileNotFoundError
+        for src_rel, _dst_rel in ex.HUB_VIEWER_FILES:
+            f = self.viewer / src_rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text("/* fixture */", encoding="utf-8")
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -121,7 +123,6 @@ class WriteHubRootTest(unittest.TestCase):
         (self.viewer / "hub" / "hub.js").unlink()
         with self.assertRaises(FileNotFoundError):
             ex.write_hub_root(self.root, self.viewer, "RepoA")
-
     def test_preserves_order_across_many(self):
         names = [f"Repo{i}" for i in range(10)]
         for n in names:
@@ -130,22 +131,21 @@ class WriteHubRootTest(unittest.TestCase):
 
 
     def test_all_hub_viewer_files_copied(self):
-        """HUB_VIEWER_FILES 里的每个文件都必须真的铺到根目录（清单只有一处）。"""
+        """HUB_VIEWER_FILES 里的每个文件都必须真的铺到目标位置（清单只有一处）。"""
         ex.write_hub_root(self.root, self.viewer, "RepoA")
-        for rel in ex.HUB_VIEWER_FILES:
-            dst = self.root / ("index.html" if rel == "hub/index.html" else rel)
-            self.assertTrue(dst.exists(), f"缺少 {rel} -> {dst}")
+        for _src_rel, dst_rel in ex.HUB_VIEWER_FILES:
+            dst = self.root / dst_rel
+            self.assertTrue(dst.exists(), f"缺少 {dst_rel} -> {dst}")
 
     def test_each_hub_viewer_file_is_required(self):
         """缺任何一个都必须报错，而不是静默少铺一个文件。"""
-        for rel in ex.HUB_VIEWER_FILES:
-            with self.subTest(missing=rel):
+        for src_rel, _dst_rel in ex.HUB_VIEWER_FILES:
+            with self.subTest(missing=src_rel):
                 with tempfile.TemporaryDirectory() as td:
                     root = Path(td) / "root"
                     viewer = Path(td) / "viewer"
-                    (viewer / "hub").mkdir(parents=True)
-                    for r in ex.HUB_VIEWER_FILES:
-                        if r == rel:
+                    for r, _d in ex.HUB_VIEWER_FILES:
+                        if r == src_rel:
                             continue
                         f = viewer / r
                         f.parent.mkdir(parents=True, exist_ok=True)

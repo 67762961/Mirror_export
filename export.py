@@ -1114,8 +1114,15 @@ def copy_viewer(viewer_src: Path, out: Path) -> None:
         dst.write_bytes(src.read_bytes())
 
 
-# 总览根目录需要的 viewer 文件（index.html + hub/ 下的 css、js）
-HUB_VIEWER_FILES = ("hub/index.html", "hub/hub.css", "hub/hub.js")
+# 总览根目录需要的文件：(viewer 内的源路径, 根目录内的目标路径)。
+# hub/index.html 铺到根目录，其余放 hub/ 下；app.css 复用项目页那一份，
+# 让总览与项目页共用同一套尺寸定义（总览另抄一份必然分叉）。
+HUB_VIEWER_FILES = (
+    ("hub/index.html", "index.html"),
+    ("hub/hub.css", "hub/hub.css"),
+    ("hub/hub.js", "hub/hub.js"),
+    ("css/app.css", "hub/app.css"),
+)
 
 
 def js_quote(s: str) -> str:
@@ -1167,12 +1174,11 @@ def write_hub_root(hub_root: Path, viewer_src: Path, folder: str) -> Path:
 
     # 1) 入口页与静态资源（缺了才写）。清单只有 HUB_VIEWER_FILES 一处，
     #    不要再在这里硬编码文件名——两处写必然分叉。
-    for rel in HUB_VIEWER_FILES:
-        src = viewer_src / rel
+    for src_rel, dst_rel in HUB_VIEWER_FILES:
+        src = viewer_src / src_rel
         if not src.exists():
             raise FileNotFoundError(f"缺少 viewer 文件: {src}")
-        # hub/index.html 铺到根目录，其余按 hub/ 子目录铺
-        dst = hub_root / ("index.html" if rel == "hub/index.html" else rel)
+        dst = hub_root / dst_rel
         dst.parent.mkdir(parents=True, exist_ok=True)
         if not dst.exists():
             dst.write_bytes(src.read_bytes())
