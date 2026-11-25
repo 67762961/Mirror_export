@@ -128,6 +128,8 @@ python export.py --repo 67762961/Csv_reader --skip-details   # 只要列表，�
 python export.py --repo 67762961/Csv_reader --max-branches 50   # 限制分支数（默认 100）
 python export.py --repo 67762961/Csv_reader --max-branch-diffs 0  # 不拉分支提交的逐条 diff
 python export.py --repo 67762961/Csv_reader --no-branches      # 完全不要分支数据
+python export.py --repo 67762961/Csv_reader --out D:\mirrors\Csv_reader --hub-root D:\mirrors
+                                                               # 同时登记进多仓库总览（见「多仓库总览」）
 ```
 
 CMD 用法：`set GITHUB_TOKEN=ghp_xxx` 再运行。
@@ -151,14 +153,53 @@ gh-mirror-67762961-Csv_reader-20260914/
 
 1. 拷贝文件夹到内网任意位置
 2. 双击 `index.html`
-3. 左侧切换：概览 / PR / Issue / Commit / Tag / Branch / 版本对比 / 文件浏览
+3. 左侧切换：项目概览 / PR / Issue / Commit / Tag / Branch / 版本对比 / 文件浏览
 4. 详情页顶部「← 返回」回到上一个浏览页（如 PR → Commit 后返回 PR）；无更早历史时回对应列表
 
 > 数据以 `data/*.js` 加载，兼容 `file://` 协议，无需起本地服务器。
 
+### 多仓库总览（可选）
+
+多个镜像放进**同一个父目录**后，可以在该目录下生成一个总览入口页，一次看到所有仓库的
+打开中 PR / Issue、合并贡献墙与各项总数：
+
+```powershell
+# 第一次导出：把包放到 D:\mirrors\RepoA，并登记进总览
+python export.py --repo owner/RepoA --out D:\mirrors\RepoA --hub-root D:\mirrors
+
+# 之后每个仓库同样指定同一个 --hub-root，会自动追加到清单
+python export.py --repo owner/RepoB --out D:\mirrors\RepoB --hub-root D:\mirrors
+```
+
+拷到内网后双击 `D:\mirrors\index.html`：
+
+- 左侧第一层是「总览 / 项目」，第二层是「项目内容」（选中项目后才出现）
+- 总览页显示全部仓库的 PR / Issue / Commit / Release / 打开中数量、合并贡献墙、
+  跨仓库「打开中的 PR / Issue」列表、仓库明细表
+- 点仓库名进入对应项目页（项目页自身侧栏会隐藏，屏幕上只有一层侧栏）；
+  再点一次同一个仓库回到总览层
+- 点「打开中的 Issue / PR」里的任意一条，直接落在该项目的这条详情
+
+注意：
+
+- **`--hub-root` 必须是 `--out` 的上级目录**，两者必须在同一棵目录树里（总览页靠相对路径找项目包）。
+  参数不合法时会在**开始拉取之前**就报错退出。
+- 不传 `--hub-root` 时导出行为与以前完全一致，不会碰任何上级目录。
+- `repos.js` 是清单，**不要手工删**：删了总览页就看不到已登记的项目（重新导出可补回）。
+  手工编辑它是可以的，导出时的追加会保留你写入的其它项目。
+- 已有的入口页 `index.html` 与 `hub/*.css|js` **不会被覆盖**，方便你改样式。
+- `file://` 下所有本地页面共享同一个 origin，浏览器会给这类页面发 `localStorage` 等能力；
+  本项目不使用它们，但请知悉这一点。
+- 只承诺 **Chrome / Edge**：`file://` 的脚本加载行为依浏览器内核而定，其它浏览器未验证。
+- 目录名可以含中文、空格与 `#`；但**不要用 Windows 的目录联接（junction）或符号链接**
+  来摆放项目包——浏览器不跟随链接，总览页会报「缺少 xxx.js」。
+
 ## 功能说明
 
-概览页含 GitHub 风格贡献墙：按日汇总 Commit / PR / Issue / Tag / Release，颜色越深表示当日贡献越多；热力图默认横滑至最右侧。墙下方可按 1 天 / 7 天 / 30 天 / 90 天 / 365 天 / 从最初 / 自定义天数查看分类汇总（只影响汇总行，不缩放热力图）。
+项目概览页含 GitHub 风格贡献墙：按日汇总 Commit / PR / Issue / Tag / Release，颜色越深表示当日贡献越多；热力图默认横滑至最右侧。墙下方可按 1 天 / 7 天 / 30 天 / 90 天 / 365 天 / 从最初 / 自定义天数查看分类汇总（只影响汇总行，不缩放热力图）。
+
+> 所有时间（列表的「更新于」、导出时间、贡献墙的日期分桶）一律按**北京时间（UTC+8）**显示，
+> 与导出机、查看机所在时区无关。这样同一份镜像在任何机器上看到的数字都一致。
 
 - **PR 列表**：筛选打开 / 已合并 / 已关闭，点进详情看描述、评论、文件 diff；正文 Markdown 图片若已导出则本地显示；详情内可点 commit / `#N` 等站内跳转，用「← 返回」回到上一浏览页
 - **Issue 列表**：同样支持筛选与详情评论；评论中的图片同样走 `image_map` 本地化

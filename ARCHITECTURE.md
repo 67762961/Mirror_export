@@ -13,7 +13,9 @@
 - 下载 README 等图片资源到本地 `assets/`；
 - 下载 PR / Issue / Release 正文与评论中的外链图片到 `assets/externals/`，并写入 `meta.image_map`；
 - 增量导出：复用上次缓存，只拉有变化的内容；
-- 纯静态查看器：概览 / PR / Issue / Commit / Release / 版本对比 / 文件浏览 / README。
+- 纯静态查看器：项目概览 / PR / Issue / Commit / Release / 版本对比 / 文件浏览 / README；
+- 多仓库总览（可选）：多个镜像放在同一父目录时，父目录的 `index.html` 汇总所有仓库的
+  打开中 PR / Issue、合并贡献墙与各项总数，并可切进任意一个项目页。
 
 运行角色分离：
 
@@ -59,7 +61,15 @@ Mirror_export/
 │   ├── index.html                 壳页面，按序加载 data/*.js 与 js/*.js
 │   ├── css/app.css                GitHub Light 风格样式
 │   ├── js/app.js                  路由、列表、详情、diff、文件树
-│   └── js/gitgraph.js             分支树泳道布局（纯函数，可 Node 单测）
+│   ├── js/gitgraph.js             分支树泳道布局（纯函数，可 Node 单测）
+│   └── hub/                       多仓库总览页模板（只在 --hub-root 时铺到父目录）
+│       ├── index.html             总览壳页面（两层侧栏）
+│       ├── hub.css                复用 app.css 的设计令牌
+│       └── hub.js                 跨仓库加载 / 汇总 / 贡献墙 / 项目切换
+├── tests/                         单元测试（标准库 unittest，无需第三方依赖）
+│   ├── test_hub_root.py           清单读写、去重、原子替换、不覆盖用户改动
+│   ├── test_hub_e2e.py            --hub-root 路径校验
+│   └── test_hub_real_pkgs.py      用本机真实镜像包验证登记链路
 ├── preview/                       本地演示包（无 GitHub 时可打开）
 ├── sample/                        示例数据（结构同 preview/data）
 ├── data/                          开发/调试用数据样例
@@ -417,7 +427,7 @@ python export.py --repo owner/name --full   # 强制全量
     - **宽度漂移及其消除**：`maxLane` 会随渲染行数增长（并行分支只有在渲染到相应位置时才出现）。若直接用局部布局的宽度，追加后 `maxLane` 变大、**已显示的行会整体右移**。因此 `renderGitGraph()` **先做一趟全量布局**只为取 `probe.laneCount`，第二趟按当前条数渲染并传入 `laneCount: probe.laneCount` 强制同一宽度。实测 3000 节点全量布局仅约 2ms，可忽略。
   - **大列表渲染开销**：瓶颈在 DOM 而非布局（实测 3000 行：布局 ~2ms，占 96% 的时间花在 DOM 解析与回流，约 27k 节点 / 65ms）。因此 `.gitgraph-row` 加 `content-visibility: auto` 跳过视口外行的渲染（**必须同时给 `contain-intrinsic-size: auto 26px`**，否则浏览器不知道离屏行高、滚动条会乱跳）。不支持的浏览器自动忽略，不影响功能；
   - 布局抛异常时只降级为一条提示，不拖垮整页；无 `graph.js` 的旧包不渲染图，仅显示分支表。
-- 概览含 GitHub 风格贡献墙：按日统计 Commit（`author_date`）、PR/Issue（`created_at`）、Release（`published_at`）、Tag（前端用同名 Release 日期或对应 commit 日期推断；无法定位则不进墙）。热力图横滑全历史，默认停在最右；色阶按当日总贡献的四分位（少量非零天时用固定阈值）。墙下汇总行可选 1 天 / 7 天 / 30 天 / 90 天 / 365 天 / 从最初 / 自定义天数，只影响汇总数字，不缩放热力图；变更后将墙滚回最右；
+- 项目概览含 GitHub 风格贡献墙：按日统计 Commit（`author_date`）、PR/Issue（`created_at`）、Release（`published_at`）、Tag（前端用同名 Release 日期或对应 commit 日期推断；无法定位则不进墙）。热力图横滑全历史，默认停在最右；色阶按当日总贡献的四分位（少量非零天时用固定阈值）。墙下汇总行可选 1 天 / 7 天 / 30 天 / 90 天 / 365 天 / 从最初 / 自定义天数，只影响汇总数字，不缩放热力图；变更后将墙滚回最右；
 - 详情页支持：PR 文件 diff、Issue 评论、Commit message 与文件、Release compare 摘要、文件树与已缓存文本源码；
 - **版本对比页**：base / head 都可选**分支或标签**（`compareRefs()` 有 `graph.refs` 时复用 `commitRefs()`，旧包退化为纯 tag 列表）。默认 `base` = 默认分支、`head` = 最新 tag（无 tag 则取第一个非默认分支）。
   - **算法用「可达集合差」而非数组下标切片**：`reachableSet(ref)` 沿 `parents` 回溯得到该 ref 的可达提交集合，`compareResult()` 取 `headSet \ baseSet` 为 head 领先的提交、`baseSet \ headSet` 为落后条数。旧实现用 `commits.js` 的数组下标切片，**对分支根本不成立**（分支独有提交不在 `commits.js` 里，切片只能在主干上近似）；现在经 `commitPool()` 取提交，分支独有提交也能正确对比。
@@ -545,6 +555,65 @@ window.GH_DATA=window.GH_DATA||{};window.GH_DATA.<name>=<compact-json>;
   - 删除旧 exe 时**不能直接 `unlink`**：Windows 上旧 exe 即使进程已退出也可能残留句柄导致
     `PermissionError`，但 **rename 通常能成功** → `remove_locked_artifact()` 先改名再删。
 - `copy_viewer` 从 `app_root()/viewer` 复制到输出目录，**按白名单逐文件复制**（`index.html` / `css/app.css` / `js/app.js` / `js/gitgraph.js`），缺文件会直接报错；新增 viewer 文件必须同步该白名单。
+
+## 8.1 多仓库总览（hub）
+
+多个镜像放在**同一个父目录**时，父目录可以有一个总览入口页。这是**可选功能**：
+不传 `--hub-root` 时导出行为与以前完全一致，不会碰任何上级目录。
+
+### 目录布局
+
+```
+<父目录>/                        ← --hub-root
+├── index.html                   总览入口（只在缺失时写入）
+├── repos.js                     清单：window.GH_HUB.order = ["仓库文件夹", ...]
+├── hub/
+│   ├── hub.css                  观感令牌与 app.css 对齐
+│   └── hub.js                   加载 / 汇总 / 贡献墙 / 项目切换
+├── RepoA/                       普通镜像包（内容不变）
+└── RepoB/
+```
+
+### 实现要点（改 `viewer/hub/` 前先读）
+
+- **`file://` 下能做什么、不能做什么**（均已实测）：
+  - 能用 `<script src="子目录/data/x.js">` 读兄弟目录；动态 `createElement("script")` 也可以；
+  - **不能用 `fetch`** 读本地 JSON（浏览器拒绝），所以数据只能是 `.js` 赋值文件；
+  - **不能用 ES module**（动态 `import()` 报 `Failed to fetch dynamically imported module`）；
+  - iframe 能正常渲染兄弟目录的页面，但 `contentDocument` 为 **null**：外层读不到也改不了
+    项目页内部状态，只能靠 URL 传参 + 重建 iframe；
+  - 父子页之间的 `postMessage` **双向可用**；
+  - **Windows 目录联接（junction）/ 符号链接不被跟随**：项目包必须是真实目录，否则
+    加载时 `onerror`、总览页报「缺少 xxx.js」。
+- **目录名必须逐段 `encodeURIComponent`**：`encodeURI` 对空格与 `#` 会静默失败
+  （`#` 后面的部分被当作 fragment 丢掉），这类失败没有报错、只在 `onerror` 里体现。
+- **加载一个 `data/*.js` 后必须立刻取快照并清空全局键**：下一个文件会覆盖同名
+  `window.GH_DATA[name]`，不立刻取就会拿到别的仓库的数据。
+- **两阶段加载**：阶段一 `meta/prs/issues`（先出计数与打开列表），阶段二
+  `commits/tags/releases`（补贡献墙与 Commit/Release 数字）。阶段二未完成时这些数字
+  显示 `…` 而不是 `0`——显示 0 会被误读成「该仓库确实没有提交」。
+- **统计由前端现算，不预生成摘要文件**：某个仓库的 `data/*.js` 被单独更新时，
+  总览页的总览 HTML 不会跟着重写；只有现算才能保证数字是当前的。
+- **口径必须与项目页一致**（改一处必须同步另一处，否则同一仓库在两页上数字不同）：
+  - 时间分桶固定**北京时间 UTC+8**，与查看机时区无关；
+  - 打开中的 PR = `state === "open" && !merged`；打开中的 Issue = `state === "open"`；
+    draft 不排除（项目页也没排除）；
+  - 贡献墙逐日来源同项目页 `getActivityIndex()`；Tag 日期按「同名 Release → 指向的 commit」
+    回退，都取不到则不计入并显示「另有 N 个 Tag 日期未知」；
+  - 跨仓库查找 tag 指向的 commit 用**全局 sha 索引**，不逐仓库查：同一份代码可能被拆到
+    多个仓库镜像里。
+- **项目页的受控参数**（由本项目页 `js/app.js` 消费，不带参数时行为与以前一致）：
+  - `?embed=1` 隐藏自身侧栏（否则总览页会出现两层侧栏）；
+  - `?view=<视图>` 指定初始视图，只认白名单，非法值退回 `overview`；
+  - `?num=<编号|sha|名称>` 打开对应条目详情（PR/Issue 用编号，Commit 用 sha，
+    Release/Branch 用名称）。
+- **`repos.js` 必须「读旧 → 追加 → 原子替换」**：整块重写会把之前登记的项目全部抹掉；
+  用 `tmp` + `os.replace` 保证并发写不会留下半个文件。已存在的项不重复追加。
+- **`index.html` 与 `hub/*.css|js` 只在缺失时写入**：用户可能手工改过入口页，
+  两个导出进程也可能同时往同一父目录登记。
+- **`--hub-root` 必须在任何网络请求之前校验**（必须是 `--out` 的上级目录）：
+  参数写错却先跑完半小时的拉取再报错，用户会白等一轮。
+
 
 ## 9. 实施约束
 

@@ -60,4 +60,19 @@
 - 二进制扩展名见 `export.BINARY_EXT`；单文件正文默认上限 400KB；图片下载上限 2MB（树内图与 PR/Issue/Release 正文外链图共用）。正文外链图落在 `assets/externals/`，URL→本地路径映射写在 `meta.image_map`。调整这些限制时同步更新 README 与 ARCHITECTURE。
 - 查看器 XSS 边界：所有从 GitHub 拉取的 HTML/文本在渲染前必须 `esc()` 或经受控的 `processRichHtml()`；禁止把未转义的 API 字段直接 `innerHTML`。**正文里的原始 HTML 一律先过 `sanitizeHtml()` 白名单**（`viewer/js/app.js` 顶部）：只保留排版类标签与安全属性，丢弃全部 `on*` 事件属性、`style` 属性，以及 `javascript:` / `vbscript:` / `data:` / `blob:` / `file:` 协议。新增可渲染标签或属性时必须同时加进 `SAFE_TAGS` / `SAFE_ATTRS` 白名单，**禁止**退回「黑名单只删 script/iframe」的写法。右键开图等 `window.open` 出口同样必须校验协议（只放行 http(s)/file）。
 - 版本对比（`renderCompare`）用**可达集合差**（`reachableSet` 沿 `parents` 回溯 + `compareResult` 求集合差），**禁止退回按 `commits.js` 数组下标切片**——分支独有提交不在 `commits.js` 里，切片只能近似主干、对分支完全错误。文件差异**只显示导出时预计算好的**（`branches[].compare` / `releases[].compare`），且**方向相反时故意不展示**（增删对调会误导）；改这里时不要"顺手"把反向也算上。
+
+### 多仓库总览（hub）
+- 总览页在 `viewer/hub/`（`index.html` / `hub.css` / `hub.js`），**只在传 `--hub-root` 时**由 `export.write_hub_root()` 铺到输出目录的父目录。不传该参数时导出行为与改动前一致，**不得**让它去碰任何上级目录。
+- **统计必须前端现算，禁止预生成摘要文件**：某个仓库的 `data/*.js` 被单独更新时总览 HTML 不会重写，只有现算才是当前值。为此也不要在 `data/` 下新增 `hub.js` 一类摘要。
+- **口径必须与项目页一致**（改一处必须同步另一处，否则同一仓库在两页上数字不同）：① 时间分桶固定**北京时间 UTC+8**（两边各有一份 `TZ_OFFSET_MS`，改常量必须两边一起改）；② 打开中的 PR = `state === "open" && !merged`，Issue = `state === "open"`，**draft 不排除**；③ 贡献墙逐日来源同 `getActivityIndex()`，Tag 日期按「同名 Release → 指向的 commit」回退，都取不到就不计入并显示「另有 N 个 Tag 日期未知」；④ 跨仓库查 tag 指向的 commit 用**全局 sha 索引**，不逐仓库查。
+- **`file://` 的硬边界**（均已实测，别试回头路）：`fetch` 读本地 JSON 会被拒；ES module 动态 `import()` 失败；跨文件 iframe 的 `contentDocument` 为 **null**（外层读不到也改不了项目页状态，只能靠 URL 传参 + 重建 iframe）；父子页 `postMessage` 双向可用；**Windows 目录联接/符号链接不被跟随**（项目包必须是真实目录）。
+- 引用项目包路径时**必须逐段 `encodeURIComponent`**：`encodeURI` 对空格与 `#` 会静默失败（`#` 之后被当 fragment），失败只体现在 `onerror`。
+- **加载一个 `data/*.js` 后必须立刻取快照并清空 `window.GH_DATA[name]`**：下一个文件会覆盖同名全局键，不立刻取会拿到别的仓库的数据。
+- 两阶段加载：阶段一 `meta/prs/issues`，阶段二 `commits/tags/releases`。阶段二未完成时相关数字必须显示 `…` 而不是 `0`——显示 0 会被误读成「该仓库确实没有提交」。
+- 项目页的受控参数（`?embed=1` / `?view=` / `?num=`）由 `viewer/js/app.js` 消费，**不带参数时行为必须与改动前完全一致**；`view` 只认白名单，非法值退回 `overview`；`num` 的语义随视图而定（PR/Issue 编号、Commit sha、Release/Branch 名称）。改这块要复验「无参数打开逐像素不变」。
+- `repos.js` **必须「读旧 → 追加 → 原子替换」**（`tmp` + `os.replace`），整块重写会抹掉之前登记的项目；已存在的项不重复追加。读取时匹配 `window.GH_HUB.order` 要**允许等号两侧有空白**——写出的文件是 `window.GH_HUB.order = [`，按无空格精确匹配会让第二次导出读不回清单（单测抓到过）。
+- `index.html` 与 `hub/*.css|js` **只在缺失时写入**：用户可能手工改过入口页，两个导出进程也可能同时往同一父目录登记。
+- `--hub-root` **必须在任何网络请求之前校验**（必须是 `--out` 的上级目录）：参数写错却先跑完半小时的拉取再报错，用户会白等一轮。
+- 新增 `viewer/hub/` 下的文件时**必须同步 `copy_viewer()` 的白名单与 `HUB_VIEWER_FILES`**，否则导出包缺文件、总览页打不开。
+- `tests/` 是本项目唯一的自动化测试目录（标准库 `unittest`，不联网）。改 `write_hub_root` / `read_hub_order` / `--hub-root` 校验后必须跑 `python -m unittest discover -s tests`；本机若 `python` 不可用，用 `D:\ENGINEERING\Python\_dsh_probe2.exe`。
 - 修改或新增算法/数据结构前，必须先阅读 ARCHITECTURE.md，确认数据流和调用链。
